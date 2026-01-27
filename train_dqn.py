@@ -17,13 +17,14 @@ GAMMA = 0.99
 EPSILON_START = 1.0
 EPSILON_END = 0.1
 EPSILON_DECAY = 10000
-BUFFER_SIZE = 1000
-BATCH_SIZE = 64
+BUFFER_SIZE = 2048
+BATCH_SIZE = 512
 TARGET_UPDATE = 1000
 EVAL_INTERVAL = 100 # episodes
 SELF_PLAY_UPDATE_THRESHOLD = 0.75 # Win rate > 55% to update opponent
-NUM_EPISODES = 30000
+NUM_EPISODES = 200000
 OPPONENT_UPDATE_MIN_EPISODES = 3000 # Wait 1000 episodes
+CHECKPOINT_INTERVAL = 5000 # Save checkpoint every N episodes
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -112,6 +113,35 @@ class ReplayBuffer:
         state, action, reward, next_state, done, mask, next_mask = zip(*batch)
         return state, action, reward, next_state, done, mask, next_mask
 
+def evaluate_winrate(env, model, num_episodes=20):
+    """
+    Runs the agent using pure exploitation (argmax) against the current opponent in the env.
+    Returns the win rate (0.0 to 1.0).
+    """
+    wins = 0
+    model.eval() # Set to eval mode
+    
+    for _ in range(num_episodes):
+        obs, _ = env.reset()
+        done = False
+        while not done:
+            mask = get_action_mask(obs).unsqueeze(0)
+            state_tensor = preprocess_obs(obs).unsqueeze(0)
+            
+            with torch.no_grad():
+                q_values = model(state_tensor)
+                q_values[~mask] = -float('inf')
+                action = q_values.argmax().item()
+            
+            obs, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            
+            if done and reward > 0:
+                wins += 1
+                
+    model.train() # Set back to train mode
+    return wins / num_episodes
+
 # --- Training Loop ---
 def train():
     env_raw = gym.make("BlackHole-v0")
@@ -189,6 +219,7 @@ def train():
     
     # Metrics
     recent_rewards = deque(maxlen=100)
+    recent_wins = deque(maxlen=100)
     avg_rewards_log = []
     win_rates = []
 
@@ -271,43 +302,42 @@ def train():
                     target_model.load_state_dict(current_model.state_dict())
 
             recent_rewards.append(episode_reward)
+            # Track Win (1 if reward > 0, assumption based on BlackHole rules)
+            recent_wins.append(1 if episode_reward > 0 else 0)
 
             # Evaluation & Self-Play Update
+            # Evaluation & Self-Play Update
             if episode % EVAL_INTERVAL == 0 and episode > 0:
-                avg_reward = np.mean(recent_rewards) if recent_rewards else 0
+                avg_reward = np.mean(recent_rewards)
+                train_win_rate = np.mean(recent_wins)
+                
+                # Pure Exploitation Evaluation
+                eval_win_rate = evaluate_winrate(env, current_model, num_episodes=20)
+                
                 avg_rewards_log.append(avg_reward)
-                log(f"Episode {episode}, Avg Reward (last 100): {avg_reward:.2f}, Epsilon: {epsilon:.2f}")
+                win_rates.append(eval_win_rate) # Track Eval Win Rate
                 
-                # Eval against opponent
-                wins = 0
-                n_eval = 20
-                for _ in range(n_eval):
-                    # Deterministic Eval
-                    e_obs, _ = env.reset()
-                    e_done = False
-                    while not e_done:
-                        e_tens = preprocess_obs(e_obs).unsqueeze(0)
-                        e_mask = get_action_mask(e_obs).unsqueeze(0)
-                        with torch.no_grad():
-                            q = current_model(e_tens)
-                            q[~e_mask] = -float('inf')
-                            act = q.argmax().item()
-                        e_obs, r, t, tr, _ = env.step(act)
-                        e_done = t or tr
-                        if e_done and r == 1: # We (agent) won
-                            wins += 1
-                
-                win_rate = wins / n_eval
-                win_rates.append(win_rate)
-                log(f"Eval Win Rate vs Opponent: {win_rate:.2f}")
+                log(f"Episode {episode} | AvgReward: {avg_reward:.2f} | TrainWR: {train_win_rate:.2f} | EvalWR: {eval_win_rate:.2f} | Eps: {epsilon:.2f}")
                 
                 episodes_since_update = episode - last_opponent_update_episode
-                if win_rate > SELF_PLAY_UPDATE_THRESHOLD and episodes_since_update >= OPPONENT_UPDATE_MIN_EPISODES:
-                    log(">>> PROMOTING MODEL: Updating Opponent to Current Model <<<")
+                if eval_win_rate > SELF_PLAY_UPDATE_THRESHOLD and episodes_since_update >= OPPONENT_UPDATE_MIN_EPISODES:
+                    log(f">>> PROMOTING MODEL: Updating Opponent (Eval WR: {eval_win_rate:.2f}) <<<")
                     opponent_model.load_state_dict(current_model.state_dict())
                     last_opponent_update_episode = episode
-                elif win_rate > SELF_PLAY_UPDATE_THRESHOLD:
-                    log(f"Win rate good ({win_rate:.2f}) but waiting for min episodes ({episodes_since_update}/{OPPONENT_UPDATE_MIN_EPISODES})")
+                elif eval_win_rate > SELF_PLAY_UPDATE_THRESHOLD:
+                    log(f"Eval Win rate good ({eval_win_rate:.2f}) but waiting for min episodes ({episodes_since_update}/{OPPONENT_UPDATE_MIN_EPISODES})")
+            
+            # Checkpoint
+            if episode % CHECKPOINT_INTERVAL == 0 and episode > 0:
+                checkpoint_path = os.path.join(save_dir, "checkpoint.pth")
+                checkpoint = {
+                    'model_config': current_model.config,
+                    'state_dict': current_model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'episode': episode
+                }
+                torch.save(checkpoint, checkpoint_path)
+                log(f"Checkpoint saved to {checkpoint_path}")
                     
     except KeyboardInterrupt:
         log("\nTraining interrupted by user. Saving current model...")
