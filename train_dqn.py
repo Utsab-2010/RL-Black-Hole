@@ -22,7 +22,9 @@ BATCH_SIZE = 64
 TARGET_UPDATE = 1000
 EVAL_INTERVAL = 100 # episodes
 SELF_PLAY_UPDATE_THRESHOLD = 0.75 # Win rate > 55% to update opponent
-NUM_EPISODES = 20000
+NUM_EPISODES = 30000
+OPPONENT_UPDATE_MIN_EPISODES = 3000 # Wait 1000 episodes
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -30,30 +32,76 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class QNetwork(nn.Module):
     def __init__(self):
         super(QNetwork, self).__init__()
-        # Input: 21 positions * 2 values (player, value) + 1 (current_tile)
-        # Actually board is (21, 2). Flatten -> 42.
-        # Add current_tile -> 43.
-        self.fc1 = nn.Linear(43, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, 21) # 21 possible actions
+        # Embeddings
+        self.pos_emb = nn.Embedding(21, 4)     # 21 positions -> dim 4
+        self.val_emb = nn.Embedding(11, 4)     # 0-10 values -> dim 4
+        self.player_emb = nn.Embedding(3, 3)   # 0-2 players -> dim 3
+        
+        # Per Position Feature Size: 4 + 4 + 3 = 11
+        # Total Board Flattened: 21 * 11 = 231
+        # Current Tile Feature: 4 (uses val_emb)
+        # Total Input: 231 + 4 = 235
+        
+        self.fc1 = nn.Linear(235, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc3 = nn.Linear(64, 21) # 21 possible actions
 
     def forward(self, x):
-        # x: (Batch, 43)
-        x = torch.tanh(self.fc1(x))
+        # x input is now expected to be LongTensor of shape (Batch, 43)
+        # Format: [Pos0_Player, Pos0_Val, Pos1_Player, Pos1_Val, ... , Current_Tile]
+        # But wait, to map to Pos embeddings, we need to know WHICH position we are at.
+        # We can construct the position indices tensor on the fly.
+        
+        batch_size = x.shape[0]
+        
+        # Sizing:
+        # x[:, 0:42] is board data. 
+        # Even indices (0, 2, 4...) are Player IDs.
+        # Odd indices (1, 3, 5...) are Values.
+        # x[:, 42] is Current Tile Value.
+        
+        board_data = x[:, :42].view(batch_size, 21, 2)
+        # board_data[:, :, 0] -> Player IDs
+        # board_data[:, :, 1] -> Values
+        
+        players = board_data[:, :, 0] # (Batch, 21)
+        values = board_data[:, :, 1]  # (Batch, 21)
+        current_tile = x[:, 42]       # (Batch)
+        
+        # Position Indices: Fixed 0..20 for every batch
+        pos_indices = torch.arange(21, device=x.device).unsqueeze(0).expand(batch_size, -1) # (Batch, 21)
+        
+        # Lookups
+        p_emb = self.player_emb(players) # (Batch, 21, 16)
+        v_emb = self.val_emb(values)     # (Batch, 21, 32)
+        pos_emb = self.pos_emb(pos_indices) # (Batch, 21, 32)
+        
+        # Concatenate per position
+        # shape: (Batch, 21, 16+32+32=80)
+        board_feat = torch.cat([p_emb, v_emb, pos_emb], dim=2)
+        
+        # Flatten board
+        board_flat = board_feat.view(batch_size, -1) # (Batch, 1680)
+        
+        # Current Tile
+        cur_feat = self.val_emb(current_tile) # (Batch, 32)
+        
+        # Combine
+        total_feat = torch.cat([board_flat, cur_feat], dim=1) # (Batch, 1712)
+        
+        x = torch.tanh(self.fc1(total_feat))
         x = torch.tanh(self.fc2(x))
         return self.fc3(x)
 
 def preprocess_obs(obs):
-    # Convert dict obs to flattened tensor
+    # Convert dict obs to flattened LongTensor of indices
     # board: (21, 2)
     board = obs["board"].flatten()
     current_tile = np.array([obs["current_tile"]])
     
-    # Normalize? 
-    # Tile values 1-10. Board values 0-10.
-    # Simple float conversion is enough for now.
-    features = np.concatenate([board, current_tile])
-    return torch.FloatTensor(features).to(device)
+    # Concatenate to (43,) array
+    features = np.concatenate([board, current_tile]).astype(int) # Ensure int for Embedding
+    return torch.LongTensor(features).to(device)
 
 def get_action_mask(obs):
     # Return bool tensor: True if action is valid
@@ -104,6 +152,7 @@ def train():
     buffer = ReplayBuffer(BUFFER_SIZE)
     
     steps = 0
+    last_opponent_update_episode = 0
     epsilon = EPSILON_START
     
     # Metrics
@@ -163,10 +212,10 @@ def train():
             if len(buffer.buffer) > BATCH_SIZE:
                 s_batch, a_batch, r_batch, ns_batch, d_batch, m_batch, nm_batch = buffer.sample(BATCH_SIZE)
                 
-                s_batch = torch.FloatTensor(np.array(s_batch)).to(device)
+                s_batch = torch.LongTensor(np.array(s_batch)).to(device)
                 a_batch = torch.LongTensor(np.array(a_batch)).unsqueeze(1).to(device)
                 r_batch = torch.FloatTensor(np.array(r_batch)).unsqueeze(1).to(device)
-                ns_batch = torch.FloatTensor(np.array(ns_batch)).to(device)
+                ns_batch = torch.LongTensor(np.array(ns_batch)).to(device)
                 d_batch = torch.FloatTensor(np.array(d_batch)).unsqueeze(1).to(device)
                 nm_batch = torch.BoolTensor(np.array(nm_batch)).to(device)
                 
@@ -226,9 +275,13 @@ def train():
             win_rates.append(win_rate)
             print(f"Eval Win Rate vs Opponent: {win_rate:.2f}")
             
-            if win_rate > SELF_PLAY_UPDATE_THRESHOLD:
+            episodes_since_update = episode - last_opponent_update_episode
+            if win_rate > SELF_PLAY_UPDATE_THRESHOLD and episodes_since_update >= OPPONENT_UPDATE_MIN_EPISODES:
                 print(">>> PROMOTING MODEL: Updating Opponent to Current Model <<<")
                 opponent_model.load_state_dict(current_model.state_dict())
+                last_opponent_update_episode = episode
+            elif win_rate > SELF_PLAY_UPDATE_THRESHOLD:
+                print(f"Win rate good ({win_rate:.2f}) but waiting for min episodes ({episodes_since_update}/{OPPONENT_UPDATE_MIN_EPISODES})")
 
     # Create Save Directory
     base_dir = "trained_models"
