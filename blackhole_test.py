@@ -67,9 +67,22 @@ def main():
 
         print(f"Loading model from: {model_path}")
         
-        # Load Model
-        agent = QNetwork().to(DEVICE)
-        agent.load_state_dict(torch.load(model_path, map_location=DEVICE))
+        # Load Checkpoint
+        checkpoint = torch.load(model_path, map_location=DEVICE)
+        
+        # Check if it's the new dictionary format or old state_dict
+        if isinstance(checkpoint, dict) and 'model_config' in checkpoint:
+            config = checkpoint['model_config']
+            state_dict = checkpoint['state_dict']
+            print(f"Loaded config: {config}")
+            agent = QNetwork(**config).to(DEVICE)
+            agent.load_state_dict(state_dict)
+        else:
+            # Fallback for old models (hardcoded dims)
+            print("Warning: Loading old format model. Assuming default architecture.")
+            agent = QNetwork(pos_dim=4, val_dim=4, player_dim=3).to(DEVICE) # Default to latest arch
+            agent.load_state_dict(checkpoint)
+            
         agent.eval()
     except Exception as e:
         print(f"Error loading model: {e}")
