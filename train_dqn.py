@@ -134,7 +134,38 @@ def train():
     opponent_model.load_state_dict(current_model.state_dict())
     opponent_model.eval()
     
-    print(f"Model Architecture: {current_model}")
+    # --- Setup Directories (Moved to Start) ---
+    base_dir = "trained_models"
+    method = "DQN"
+    game = "BlackHole"
+    
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
+        
+    existing = [d for d in os.listdir(base_dir) if d.startswith(f"{game}_{method}_v")]
+    versions = []
+    for d in existing:
+        try:
+            v = int(d.split("_v")[-1])
+            versions.append(v)
+        except ValueError:
+            pass
+    next_version = max(versions) + 1 if versions else 1
+    
+    save_dir = os.path.join(base_dir, f"{game}_{method}_v{next_version}")
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Real-time Log File
+    log_file_path = os.path.join(save_dir, "training_run.log")
+    
+    def log(msg):
+        print(msg)
+        with open(log_file_path, "a") as f:
+            f.write(msg + "\n")
+
+    log(f"Starting Training Run v{next_version}")
+    log(f"Hyperparameters: LR={LEARNING_RATE}, Gamma={GAMMA}, Eps={EPSILON_START}->{EPSILON_END}")
+    log(f"Model Architecture: {current_model}")
     
     def opponent_policy_fn(obs):
         # Input obs is canonical dictionary
@@ -160,8 +191,8 @@ def train():
     recent_rewards = deque(maxlen=100)
     avg_rewards_log = []
     win_rates = []
-    
-    print("Starting Training...")
+
+    log("Starting Training Loop...")
     
     try:
         for episode in range(NUM_EPISODES):
@@ -245,7 +276,7 @@ def train():
             if episode % EVAL_INTERVAL == 0 and episode > 0:
                 avg_reward = np.mean(recent_rewards) if recent_rewards else 0
                 avg_rewards_log.append(avg_reward)
-                print(f"Episode {episode}, Avg Reward (last 100): {avg_reward:.2f}, Epsilon: {epsilon:.2f}")
+                log(f"Episode {episode}, Avg Reward (last 100): {avg_reward:.2f}, Epsilon: {epsilon:.2f}")
                 
                 # Eval against opponent
                 wins = 0
@@ -268,42 +299,20 @@ def train():
                 
                 win_rate = wins / n_eval
                 win_rates.append(win_rate)
-                print(f"Eval Win Rate vs Opponent: {win_rate:.2f}")
+                log(f"Eval Win Rate vs Opponent: {win_rate:.2f}")
                 
                 episodes_since_update = episode - last_opponent_update_episode
                 if win_rate > SELF_PLAY_UPDATE_THRESHOLD and episodes_since_update >= OPPONENT_UPDATE_MIN_EPISODES:
-                    print(">>> PROMOTING MODEL: Updating Opponent to Current Model <<<")
+                    log(">>> PROMOTING MODEL: Updating Opponent to Current Model <<<")
                     opponent_model.load_state_dict(current_model.state_dict())
                     last_opponent_update_episode = episode
                 elif win_rate > SELF_PLAY_UPDATE_THRESHOLD:
-                    print(f"Win rate good ({win_rate:.2f}) but waiting for min episodes ({episodes_since_update}/{OPPONENT_UPDATE_MIN_EPISODES})")
+                    log(f"Win rate good ({win_rate:.2f}) but waiting for min episodes ({episodes_since_update}/{OPPONENT_UPDATE_MIN_EPISODES})")
                     
     except KeyboardInterrupt:
-        print("\nTraining interrupted by user. Saving current model...")
+        log("\nTraining interrupted by user. Saving current model...")
         
     finally:
-        # Create Save Directory
-        base_dir = "trained_models"
-        method = "DQN"
-        game = "BlackHole"
-        
-        # Find next version
-        if not os.path.exists(base_dir):
-            os.makedirs(base_dir)
-            
-        existing = [d for d in os.listdir(base_dir) if d.startswith(f"{game}_{method}_v")]
-        versions = []
-        for d in existing:
-            try:
-                v = int(d.split("_v")[-1])
-                versions.append(v)
-            except ValueError:
-                pass
-        next_version = max(versions) + 1 if versions else 1
-        
-        save_dir = os.path.join(base_dir, f"{game}_{method}_v{next_version}")
-        os.makedirs(save_dir, exist_ok=True)
-        
         # Save Model
         model_path = os.path.join(save_dir, "model.pth")
         
@@ -315,7 +324,7 @@ def train():
         }
         
         torch.save(checkpoint, model_path)
-        print(f"Model saved to {model_path}")
+        log(f"Model saved to {model_path}")
         
         # Save Plot
         plt.figure(figsize=(12, 5))
@@ -331,10 +340,10 @@ def train():
         
         plt.tight_layout()
         plt.savefig(os.path.join(save_dir, "training_log.png"))
-        print("Training plot saved.")
+        log("Training plot saved.")
         
         # Save Log Text (Summary)
-        log_path = os.path.join(save_dir, "training_log.txt")
+        log_path = os.path.join(save_dir, "training_summary.txt")
         with open(log_path, "w") as f:
             f.write(f"Game: {game}\n")
             f.write(f"Method: {method}\n")
@@ -351,7 +360,7 @@ def train():
             f.write(str(current_model) + "\n")
             f.write("-" * 20 + "\n")
             f.write(f"Final Win Rate (vs Opponent): {win_rates[-1] if win_rates else 'N/A'}\n")
-        print(f"Training log saved to {log_path}")
+        print(f"Training summary saved to {log_path}")
 
 if __name__ == "__main__":
     train()
