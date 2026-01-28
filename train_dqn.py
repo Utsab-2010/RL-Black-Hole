@@ -25,75 +25,165 @@ SELF_PLAY_UPDATE_THRESHOLD = 0.75 # Win rate > 55% to update opponent
 NUM_EPISODES = 200000
 OPPONENT_UPDATE_MIN_EPISODES = 3000 # Wait 1000 episodes
 CHECKPOINT_INTERVAL = 5000 # Save checkpoint every N episodes
+NUM_CYCLIC_DECAY_CYCLES = 50 # Number of restart cycles for epsilon
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # --- Model ---
+class ResBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        self.downsample = None
+        if stride != 1 or in_channels != out_channels:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        residual = x
+        if self.downsample is not None:
+            residual = self.downsample(x)
+            
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out += residual
+        out = self.relu(out)
+        return out
+
+def get_sinusoidal_embeddings(max_len, d_model):
+    pe = torch.zeros(max_len, d_model)
+    position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+    # div_term = 10000^(2i/d_model)
+    div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+    
+    pe[:, 0::2] = torch.sin(position * div_term)
+    pe[:, 1::2] = torch.cos(position * div_term)
+    return pe
+
 class QNetwork(nn.Module):
-    def __init__(self, pos_dim=4, val_dim=4, player_dim=3, hidden_dims=[128, 64]):
+    def __init__(self, pos_dim=4, val_dim=4, player_dim=3, hidden_dims=[128, 64], start_val=-10):
         super(QNetwork, self).__init__()
         self.config = {
             'pos_dim': pos_dim,
             'val_dim': val_dim,
             'player_dim': player_dim,
-            'hidden_dims': hidden_dims
+            'hidden_dims': hidden_dims,
+            'start_val': start_val
         }
+        self.start_val = start_val 
+
+        # ResNet Config (Downscaling)
+        self.map_channels = 2 # Opponent, Player
         
-        # Embeddings
-        self.pos_emb = nn.Embedding(21, pos_dim)
-        self.val_emb = nn.Embedding(11, val_dim)
-        self.player_emb = nn.Embedding(3, player_dim)
+        # Initial Conv (6x6)
+        # 2 -> 32
+        self.conv_in = nn.Conv2d(self.map_channels, 32, kernel_size=3, padding=1, bias=False)
+        self.bn_in = nn.BatchNorm2d(32)
+        self.relu = nn.ReLU(inplace=True)
         
-        # Per Position Feature Size
-        per_pos_feat = pos_dim + val_dim + player_dim
-        # Total Board Flattened
-        board_flat_dim = 21 * per_pos_feat
-        # Current Tile Feature (uses val_emb)
-        input_dim = board_flat_dim + val_dim
+        # Downscaling Blocks (ResNet-18 style expansion)
+        self.layer1 = ResBlock(32, 64, stride=2)   # 6x6 -> 3x3
+        self.layer2 = ResBlock(64, 128, stride=2)  # 3x3 -> 2x2
+        self.layer3 = ResBlock(128, 256, stride=2) # 2x2 -> 1x1
+        
+        # Final flattened size: 256 * 1 * 1 = 256
+        self.flattened_res_size = 256
+        
+        # Turn Embedding (Fixed Sinusoidal)
+        self.turn_dim = 16
+        # Register as buffer so it's saved with state_dict but not optimized
+        self.register_buffer('turn_emb_table', get_sinusoidal_embeddings(22, self.turn_dim))
+        
+        # MLP Head
+        mlp_input_dim = self.flattened_res_size + self.turn_dim
         
         layers = []
-        prev_dim = input_dim
+        prev_dim = mlp_input_dim
         for h_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, h_dim))
-            layers.append(nn.Tanh())
+            layers.append(nn.ReLU())
             prev_dim = h_dim
         
-        self.fc_layers = nn.Sequential(*layers)
-        self.output_layer = nn.Linear(prev_dim, 21)
+        self.mlp = nn.Sequential(*layers)
+        self.output_head = nn.Linear(prev_dim, 21) 
 
+        # Indices for 21 positions in 6x6 grid
+        self.pos_map = []
+        idx = 0
+        for r in range(6):
+            for c in range(r + 1):
+                self.pos_map.append((r, c))
+                idx += 1
+        
     def forward(self, x):
         batch_size = x.shape[0]
+        device = x.device
         
+        # 1. Transform state to 6x6x2
         board_data = x[:, :42].view(batch_size, 21, 2)
-        players = board_data[:, :, 0]
-        values = board_data[:, :, 1]
-        current_tile = x[:, 42]
+        players = board_data[:, :, 0] # (Batch, 21)
         
-        pos_indices = torch.arange(21, device=x.device).unsqueeze(0).expand(batch_size, -1)
+        grid = torch.full((batch_size, 2, 6, 6), self.start_val, device=device, dtype=torch.float32)
         
-        p_emb = self.player_emb(players)
-        v_emb = self.val_emb(values)
-        pos_emb = self.pos_emb(pos_indices)
+        rows = torch.tensor([r for r, c in self.pos_map], device=device)
+        cols = torch.tensor([c for r, c in self.pos_map], device=device)
         
-        board_feat = torch.cat([p_emb, v_emb, pos_emb], dim=2)
-        board_flat = board_feat.view(batch_size, -1)
+        # Fill Lower Triangle
+        grid[:, 0, rows, cols] = (players == 1).float() * 1.0
+        grid[:, 1, rows, cols] = (players == 2).float() * 2.0
         
-        cur_feat = self.val_emb(current_tile)
-        total_feat = torch.cat([board_flat, cur_feat], dim=1)
+        # 2. ResNet Encoding
+        out = self.conv_in(grid)
+        out = self.bn_in(out)
+        out = self.relu(out)
         
-        feat = self.fc_layers(total_feat)
-        return self.output_layer(feat)
+        out = self.layer1(out) # 32 -> 64, 3x3
+        out = self.layer2(out) # 64 -> 128, 2x2
+        out = self.layer3(out) # 128 -> 256, 1x1
+        
+        # Flatten
+        out = out.view(batch_size, -1) # (B, 256)
+        
+        # 3. Turn Encoding
+        turn_count = (players != 0).sum(dim=1) # (B,)
+        turn_emb = self.turn_emb_table[turn_count] # (B, 16)
+        
+        # Concatenate
+        combined = torch.cat([out, turn_emb], dim=1)
+        
+        # 4. MLP
+        logits = self.mlp(combined) 
+        output = self.output_head(logits) # (B, 21)
+        
+        # 5. Masking and Softmax
+        filled_mask = (players != 0)
+        output = output.masked_fill(filled_mask, -float('inf'))
+        
+        probs = torch.softmax(output, dim=1)
+        final_values = probs * 100.0
+        
+        return final_values
 
 def preprocess_obs(obs):
-    # Convert dict obs to flattened LongTensor of indices
+    # Convert dict obs to flattened FloatTensor of indices
     # board: (21, 2)
     board = obs["board"].flatten()
     current_tile = np.array([obs["current_tile"]])
     
     # Concatenate to (43,) array
-    features = np.concatenate([board, current_tile]).astype(int) # Ensure int for Embedding
-    return torch.LongTensor(features).to(device)
+    features = np.concatenate([board, current_tile])
+    return torch.FloatTensor(features).to(device)
 
 def get_action_mask(obs):
     # Return bool tensor: True if action is valid
@@ -164,7 +254,7 @@ def train():
     opponent_model.load_state_dict(current_model.state_dict())
     opponent_model.eval()
     
-    # --- Setup Directories (Moved to Start) ---
+    # --- Setup Directories ---
     base_dir = "trained_models"
     method = "DQN"
     game = "BlackHole"
@@ -231,9 +321,18 @@ def train():
             done = False
             episode_reward = 0
             
-            # Linear Decay over episodes (Start of Episode)
-            progress = episode / NUM_EPISODES
-            epsilon = max(EPSILON_END, EPSILON_START - progress * (EPSILON_START - EPSILON_END))
+            # Cyclic Decay Schedule
+            # Divide training into N cycles
+            cycle_len = NUM_EPISODES / NUM_CYCLIC_DECAY_CYCLES
+            current_cycle = int(episode / cycle_len)
+            cycle_progress = (episode % cycle_len) / cycle_len
+            
+            # Max epsilon for this cycle decays from START to END across cycles
+            cycle_max_eps = EPSILON_START - (current_cycle / NUM_CYCLIC_DECAY_CYCLES) * (EPSILON_START - EPSILON_END)
+            cycle_max_eps = max(cycle_max_eps, EPSILON_END)
+            
+            # Decay within cycle (Linear)
+            epsilon = EPSILON_END + (cycle_max_eps - EPSILON_END) * (1 - cycle_progress)
             
             while not done:
                 state_tensor = preprocess_obs(obs).unsqueeze(0)
@@ -245,10 +344,12 @@ def train():
                     valid_indices = torch.nonzero(mask[0]).flatten().cpu().numpy()
                     action = random.choice(valid_indices)
                 else:
+                    current_model.eval()
                     with torch.no_grad():
                         q_values = current_model(state_tensor)
                         q_values[~mask] = -float('inf')
                         action = q_values.argmax().item()
+                    current_model.train()
                 
                 next_obs, reward, terminated, truncated, _ = env.step(action)
                 done = terminated or truncated
@@ -272,10 +373,10 @@ def train():
                 if len(buffer.buffer) > BATCH_SIZE:
                     s_batch, a_batch, r_batch, ns_batch, d_batch, m_batch, nm_batch = buffer.sample(BATCH_SIZE)
                     
-                    s_batch = torch.LongTensor(np.array(s_batch)).to(device)
+                    s_batch = torch.FloatTensor(np.array(s_batch)).to(device)
                     a_batch = torch.LongTensor(np.array(a_batch)).unsqueeze(1).to(device)
                     r_batch = torch.FloatTensor(np.array(r_batch)).unsqueeze(1).to(device)
-                    ns_batch = torch.LongTensor(np.array(ns_batch)).to(device)
+                    ns_batch = torch.FloatTensor(np.array(ns_batch)).to(device)
                     d_batch = torch.FloatTensor(np.array(d_batch)).unsqueeze(1).to(device)
                     nm_batch = torch.BoolTensor(np.array(nm_batch)).to(device)
                     
@@ -305,7 +406,6 @@ def train():
             # Track Win (1 if reward > 0, assumption based on BlackHole rules)
             recent_wins.append(1 if episode_reward > 0 else 0)
 
-            # Evaluation & Self-Play Update
             # Evaluation & Self-Play Update
             if episode % EVAL_INTERVAL == 0 and episode > 0:
                 avg_reward = np.mean(recent_rewards)
@@ -391,6 +491,6 @@ def train():
             f.write("-" * 20 + "\n")
             f.write(f"Final Win Rate (vs Opponent): {win_rates[-1] if win_rates else 'N/A'}\n")
         print(f"Training summary saved to {log_path}")
-
-if __name__ == "__main__":
-    train()
+    
+    if __name__ == "__main__":
+        train()
