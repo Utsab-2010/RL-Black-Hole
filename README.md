@@ -5,13 +5,14 @@ This project implements the **Black Hole** board game as a Reinforcement Learnin
 ## 📂 Project Structure
 
 - **`black_hole/`**: The Python package for the game environment.
-  - `game.py`: Core game logic (Board string representation, Move validation, Scoring).
+  - `game.py`: Core game logic (Board representation, Move validation, Scoring).
   - `env.py`: Gymnasium wrapper implementing the standard RL API.
-  - `wrappers.py`: `SelfPlayWrapper` that handles the opponent's moves automatically, allowing single-agent training.
-- **`train_dqn.py`**: The main training script using Deep Q-Networks (DQN) with Embedding Analysis.
+  - `wrappers.py`: `SelfPlayWrapper` that handles the opponent's moves automatically.
+  - `model.py`: **Shared Model Architecture**. Contains the `QNetwork` (ResNet-18 + Sinusoidal Embeddings) and helper functions (`preprocess_obs`, `get_action_mask`) used by all scripts.
+- **`train_dqn_vector.py`**: **(Recommended if GPU)** The high-performance vectorized training script using `gym.vector.SyncVectorEnv` to run 128+ games in parallel.
+- **`train_dqn.py`**: The original single-threaded training script (reference/debugging).
 - **`blackhole_test.py`**: Pygame script to play against the AI graphically.
 - **`verify_env.py`**: Simple script to verify the Gym environment standard compliance.
-- **`setup_instructions.md`**: Guide for initial environment setup.
 
 ## 🚀 Setup
 
@@ -30,26 +31,34 @@ This project implements the **Black Hole** board game as a Reinforcement Learnin
 
 ## 🧠 Training the AI
 
-The agent learns via **Self-Play**. It plays against a frozen previous version of itself ("Opponent"). When the agent's win rate exceeds `75%`, effectively beating the opponent, the opponent is updated to the agent's current level.
+The agent learns via **Self-Play**. It plays against a previous version of itself ("Opponent"). When the agent's win rate against the opponent exceeds `75%` **for 3 consecutive evaluations**, the opponent is promoted to the current agent's level. This ensures the new agent is consistently better, not just lucky.
 
-To start training:
+### Option 1: Vectorized Training (Fastest) -> **Recommended**
+Runs multiple environments in parallel to maximize GPU utilization.
+```powershell
+python train_dqn_vector.py
+```
+**Key Hyperparameters**:
+- `NUM_ENVS`: Number of parallel games (Default: 512).
+- `BATCH_SIZE`: Training batch size (Default: 2048).
+- `NUM_CYCLIC_DECAY_CYCLES`: Number of times Epsilon resets (Cyclic Decay).
+
+### Option 2: Single-Threaded Training
+Good for debugging or understanding the flow.(use if no gpu)
 ```powershell
 python train_dqn.py
 ```
 
 ### Training Output
 Artifacts are saved in `trained_models/BlackHole_DQN_v{X}/`:
-- `model.pth`: The trained model weights.
-- `training_log.png`: A plot showing **Average Reward** and **Win Rate** over time.
+- `model.pth`: The trained model weights + config.
+- `checkpoint.pth`: Periodic checkpoint (resumable).
+- `training_plot.png`: A plot showing **Average Reward** and **Win Rate** over time.
 - `training_log.txt`: Hyperparameters and final stats.
-
-**Key Hyperparameters (in `train_dqn.py`)**:
-- `NUM_EPISODES`: Total episodes (Default: 30,000).
-- `OPPONENT_UPDATE_MIN_EPISODES`: Minimum wait (1000 eps) before updating the opponent, ensuring stability.
 
 ## 🎮 Playing Against the AI
 
-Once you have a trained model, test your skills against it!
+Once you have a trained model, test your skills against it! The script automatically finds the latest model in `trained_models/`.
 
 **Run with latest model**:
 ```powershell
@@ -67,15 +76,12 @@ python blackhole_test.py --model "trained_models/BlackHole_DQN_v1/model.pth"
 - **Click** on any valid circle to place your tile.
 - The game automatically handles the AI's turn.
 
-## 🤖 Model Architecture
+## 🤖 Model Architecture (ResNet-18)
 
-The model uses an **Embedding-based Q-Network**:
-- **Inputs**: Integers representing the board state.
-- **Embeddings**:
-  - `Position`: Maps the 21 board spots to 4D vectors.
-  - `Value`: Maps tile values (0-10) to 4D vectors.
-  - `Player`: Maps player IDs (0-2) to 3D vectors.
-- **Architecture**:
-  - Embeddings -> Concatenate -> Flatten -> Linear(128) -> Linear(64) -> Linear(21 Actions).
+The model logic is centralized in `black_hole/model.py`.
+- **Input**: 6x6x2 Grid (Plane 1 = Player 1, Plane 2 = Player 2).
+- **Backbone**: **ResNet-18** style CNN blocks (32 -> 64 -> 128 -> 256 channels).
+- **Time/Turn Encoding**: **Sinusoidal Embeddings** (Transformer-style) injected into the dense layer to tell the agent "how late" in the game it is.
+- **Output**: 21 logits corresponding to board positions, masked for validity.
 
-This architecture allows the model to learn the topological relationships of the triangular board better than a simple flattened array.
+This architecture captures spatial relationships on the board much better than standard MLPs.

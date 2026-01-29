@@ -2,12 +2,12 @@ import pygame
 import gymnasium as gym
 import black_hole
 import torch
+import torch.nn as nn
 import numpy as np
 import os
 import sys
 
-# Import DQN components
-from train_dqn import QNetwork, preprocess_obs, get_action_mask
+from black_hole.model import QNetwork, preprocess_obs, get_action_mask
 
 # --- Configuration ---
 SCREEN_WIDTH = 800
@@ -25,9 +25,6 @@ def find_latest_model(base_dir="trained_models"):
     if not os.path.exists(base_dir):
         return None
     
-    # Find all model files recursively or in subfolders
-    # Expected: trained_models/BlackHole_DQN_vX/model.pth
-    
     candidates = []
     for root, dirs, files in os.walk(base_dir):
         for f in files:
@@ -38,8 +35,6 @@ def find_latest_model(base_dir="trained_models"):
     if not candidates:
         return None
         
-    # Sort by creation time? Or by version number if strictly following convention
-    # Let's rely on modification time as a proxy for "latest"
     latest = max(candidates, key=os.path.getmtime)
     return latest
 
@@ -48,6 +43,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Play Black Hole against AI")
     parser.add_argument("--model", type=str, help="Path to model .pth file", default=None)
+    parser.add_argument("--cpu", action="store_true", help="Force CPU inference")
     args = parser.parse_args()
 
     try:
@@ -60,9 +56,7 @@ def main():
             model_path = find_latest_model()
             
         if not model_path:
-            print("No model found in trained_models/. using random agent if we fail to load?")
-            # We can't run without a model class usually unless we define logic.
-            print("Please run train_dqn.py first or specify model with --model.")
+            print("No model found in trained_models/. Please run train_dqn.py or train_dqn_vector.py first.")
             return
 
         print(f"Loading model from: {model_path}")
@@ -71,20 +65,35 @@ def main():
         checkpoint = torch.load(model_path, map_location=DEVICE)
         
         # Check if it's the new dictionary format or old state_dict
-        if isinstance(checkpoint, dict) and 'model_config' in checkpoint:
-            config = checkpoint['model_config']
-            state_dict = checkpoint['state_dict']
-            print(f"Loaded config: {config}")
-            agent = QNetwork(**config).to(DEVICE)
-            agent.load_state_dict(state_dict)
+        if isinstance(checkpoint, dict):
+            if 'model_config' in checkpoint:
+                config = checkpoint['model_config']
+                print(f"Loaded config from checkpoint: {config}")
+                agent = QNetwork(**config).to(DEVICE)
+            else:
+                print("Warning: 'model_config' not found in checkpoint. Using default architecture.")
+                agent = QNetwork().to(DEVICE)
+            
+            if 'state_dict' in checkpoint:
+                agent.load_state_dict(checkpoint['state_dict'])
+            else:
+                # If it's a dict but has no state_dict key, maybe it IS the state_dict?
+                # Unlikely if it has other keys, but for safety:
+                try:
+                    agent.load_state_dict(checkpoint)
+                except RuntimeError:
+                    print("Error: Could not load state_dict directly.")
+                    raise
         else:
-            # Fallback for old models (hardcoded dims)
+            # Fallback for old models (entire object or pure state_dict)
             print("Warning: Loading old format model. Assuming default architecture.")
-            agent = QNetwork(pos_dim=4, val_dim=4, player_dim=3).to(DEVICE) # Default to latest arch
+            agent = QNetwork().to(DEVICE)
             agent.load_state_dict(checkpoint)
             
         agent.eval()
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Error loading model: {e}")
         return
 
@@ -98,14 +107,6 @@ def main():
     # Init Env
     env = gym.make("BlackHole-v0")
     obs, info = env.reset()
-    
-    # Pre-calculate positions
-    # Triangle Layout
-    # Row 0: 1
-    # Row 1: 2
-    # Row 2: 3
-    # ...
-    # Row 5: 6
     
     positions = []
     start_y = 100
@@ -187,15 +188,16 @@ def main():
                 "current_tile": obs["current_tile"]
             }
             
-            state_tensor = preprocess_obs(ai_obs).unsqueeze(0)
-            valid = (ai_board[:, 0] == 0)
+            # Use updated helpers with DEVICE
+            state_tensor = preprocess_obs(ai_obs, DEVICE).unsqueeze(0) # Returns (1, 43)
             
             with torch.no_grad():
                 q_values = agent(state_tensor)
                 # Mask
-                # We can't use get_action_mask directly because it expects dict on device?
-                # or just use manual mask
-                q_values[0, ~torch.tensor(valid, device=DEVICE)] = -float('inf')
+                # Use get_action_mask with DEVICE
+                mask_tensor = get_action_mask(ai_obs, DEVICE) # Returns (21,) bool tensor
+                
+                q_values[0, ~mask_tensor] = -float('inf')
                 action = q_values.argmax().item()
                 
             # Execute AI Move
