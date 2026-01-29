@@ -1,6 +1,6 @@
 # Black Hole RL Project
 
-This project implements the **Black Hole** board game as a Reinforcement Learning environment using **Gymnasium**, calculates strategies using **Self-Play DQN**, and includes a **Pygame** interface to play against the trained AI.
+This project implements the **Black Hole** board game (refer to `RULES.md`) as a Reinforcement Learning environment using **Gymnasium**, calculates strategies using **Self-Play DQN**, and includes a **Pygame** interface to play against the trained AI.
 
 ## 📂 Project Structure
 
