@@ -1,4 +1,4 @@
-# Black Hole RL Project
+# Black Hole RL Agent
 
 This project implements the **Black Hole** board game (refer to `RULES.md`) as a Reinforcement Learning environment using **Gymnasium**, calculates strategies using **Self-Play DQN**, and includes a **Pygame** interface to play against the trained AI.
 
@@ -72,6 +72,7 @@ python blackhole_test.py
 **Options**:
 - `--model "path/to/model.pth"`: Play against a specific model.
 - `--player 2`: Play as Player 2 (Green) instead of Player 1 (Red).
+- `--stochastic`: AI picks moves based on probability (Softmax) instead of pure calculation (Argmax). Makes the AI less predictable.
 
 ### 2. AI vs AI (Watch Mode)
 Watch two models battle it out.

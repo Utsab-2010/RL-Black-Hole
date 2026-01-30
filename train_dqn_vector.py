@@ -16,9 +16,9 @@ import argparse
 from black_hole.model import QNetwork, preprocess_batch, get_action_mask_batch, get_action_mask
 
 # --- Hyperparameters ---
-LEARNING_RATE = 1e-5
+LEARNING_RATE = 1e-4
 GAMMA = 0.99
-EPSILON_START = 1.0
+EPSILON_START = 0.65
 EPSILON_END = 0.1
 BUFFER_SIZE = 5096
 BATCH_SIZE = 2048
@@ -30,7 +30,7 @@ OPPONENT_UPDATE_MIN_EPISODES = 3000 # Wait 1000 episodes
 CHECKPOINT_INTERVAL = 5000 # Save checkpoint every N episodes
 NUM_CYCLIC_DECAY_CYCLES = 50 # Number of restart cycles for epsilon
 NUM_ENVS = 512
-OPPONENT_UPDATE_REQ_STREAK = 3 # Require N consecutive wins > threshold to update
+OPPONENT_UPDATE_REQ_STREAK = 1 # Require N consecutive wins > threshold to update
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
