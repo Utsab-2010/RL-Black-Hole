@@ -38,6 +38,10 @@ Runs multiple environments in parallel to maximize GPU utilization.
 ```powershell
 python train_dqn_vector.py
 ```
+**Options**:
+- `--resume "path/to/checkpoint.pth"`: Resume training from a saved state (restore episode & weights).
+- `--load "path/to/model.pth"`: Start fresh training (Experiment 0) but initialized with trained weights (Fine-Tuning).
+
 **Key Hyperparameters**:
 - `NUM_ENVS`: Number of parallel games (Default: 512).
 - `BATCH_SIZE`: Training batch size (Default: 2048).
@@ -58,22 +62,33 @@ Artifacts are saved in `trained_models/BlackHole_DQN_v{X}/`:
 
 ## 🎮 Playing Against the AI
 
-Once you have a trained model, test your skills against it! The script automatically finds the latest model in `trained_models/`.
+Once you have a trained model, you can play against it, watch two models fight, or run simulations.
 
-**Run with latest model**:
+### 1. You vs AI (Interactive)
+The script automatically loads the latest model. By default, you are Player 1.
 ```powershell
 python blackhole_test.py
 ```
+**Options**:
+- `--model "path/to/model.pth"`: Play against a specific model.
+- `--player 2`: Play as Player 2 (Green) instead of Player 1 (Red).
 
-**Run with specific model**:
+### 2. AI vs AI (Watch Mode)
+Watch two models battle it out.
 ```powershell
-python blackhole_test.py --model "trained_models/BlackHole_DQN_v1/model.pth"
+python blackhole_test.py --p1 "model_A.pth" --p2 "model_B.pth"
+```
+
+### 3. Headless Simulation (Benchmarking)
+Quickly simulate 100 games between two models without graphics to get win rates.
+```powershell
+python blackhole_test.py --sim --p1 "model_A.pth" --p2 "model_B.pth" --num-games 100
 ```
 
 ### Game Controls
-- **You are Player 1 (Red)**.
-- **AI is Player 2 (Green)**.
+- **You are Player 1 (Red)** or **Player 2 (Green)**.
 - **Click** on any valid circle to place your tile.
+- The game automatically handles the AI's turn (with 0.3s delay).
 - The game automatically handles the AI's turn.
 
 ## 🤖 Model Architecture (ResNet-18)

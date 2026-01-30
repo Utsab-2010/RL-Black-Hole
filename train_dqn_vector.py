@@ -11,10 +11,12 @@ import matplotlib.pyplot as plt
 import os
 import copy
 
+import sys
+import argparse
 from black_hole.model import QNetwork, preprocess_batch, get_action_mask_batch, get_action_mask
 
 # --- Hyperparameters ---
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 1e-5
 GAMMA = 0.99
 EPSILON_START = 1.0
 EPSILON_END = 0.1
@@ -23,10 +25,10 @@ BATCH_SIZE = 2048
 TARGET_UPDATE = 1000
 EVAL_INTERVAL = 100 # episodes
 SELF_PLAY_UPDATE_THRESHOLD = 0.75 # Win rate > 55% to update opponent
-NUM_EPISODES = 500000
+NUM_EPISODES = 200000
 OPPONENT_UPDATE_MIN_EPISODES = 3000 # Wait 1000 episodes
 CHECKPOINT_INTERVAL = 5000 # Save checkpoint every N episodes
-NUM_CYCLIC_DECAY_CYCLES = 30 # Number of restart cycles for epsilon
+NUM_CYCLIC_DECAY_CYCLES = 50 # Number of restart cycles for epsilon
 NUM_ENVS = 512
 OPPONENT_UPDATE_REQ_STREAK = 3 # Require N consecutive wins > threshold to update
 
@@ -119,6 +121,10 @@ class ReplayBuffer:
 
 # --- Training Loop ---
 def train():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resume", type=str, help="Path to checkpoint to resume training from")
+    parser.add_argument("--load", type=str, help="Path to model to start fresh training from (fine-tune)")
+    args = parser.parse_args()
 
     envs = gym.vector.SyncVectorEnv([
         lambda: gym.make("BlackHole-v0") for _ in range(NUM_ENVS)
@@ -203,11 +209,57 @@ def train():
     optimizer = optim.Adam(current_model.parameters(), lr=LEARNING_RATE)
     buffer = ReplayBuffer(BUFFER_SIZE)
     
-    global_steps = 0 # Total environment steps across all envs
-    episode_count = 0
-    global_steps = 0 # Total environment steps across all envs
-    episode_count = 0
-    last_opponent_update_episode = 0
+    # --- Loading Logic ---
+    start_episode = 0
+    
+    if args.resume:
+        if os.path.isfile(args.resume):
+            log(f"Resuming training from checkpoint: {args.resume}")
+            checkpoint = torch.load(args.resume, map_location=device)
+            
+            # Load Weights
+            if 'state_dict' in checkpoint:
+                current_model.load_state_dict(checkpoint['state_dict'])
+                target_model.load_state_dict(current_model.state_dict())
+                opponent_model.load_state_dict(current_model.state_dict())
+            else:
+                # Manual load if just a raw state dict
+                current_model.load_state_dict(checkpoint)
+                target_model.load_state_dict(checkpoint)
+                opponent_model.load_state_dict(checkpoint)
+                
+            # Restore Training State
+            if 'episode' in checkpoint:
+                start_episode = checkpoint['episode']
+                log(f"Resumed at Episode: {start_episode}")
+            else:
+                log("Warning: 'episode' not found in checkpoint. Starting from 0.")
+                
+        else:
+            log(f"Error: Checkpoint file not found: {args.resume}")
+            return
+
+    elif args.load:
+        if os.path.isfile(args.load):
+            log(f"Loading pretrained weights (Fine-Tuning): {args.load}")
+            checkpoint = torch.load(args.load, map_location=device)
+            
+            if 'state_dict' in checkpoint:
+                current_model.load_state_dict(checkpoint['state_dict'])
+            else:
+                current_model.load_state_dict(checkpoint)
+                
+            target_model.load_state_dict(current_model.state_dict())
+            opponent_model.load_state_dict(current_model.state_dict())
+            
+            start_episode = 0 # Fresh start
+        else:
+            log(f"Error: Model file not found: {args.load}")
+            return
+
+    global_steps = 0 
+    episode_count = start_episode
+    last_opponent_update_episode = start_episode if args.resume else 0
     consecutive_wins = 0
     
     # Metrics

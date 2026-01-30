@@ -11,6 +11,8 @@ import matplotlib.pyplot as plt
 import os
 import copy
 
+import sys
+import argparse
 from black_hole.model import QNetwork, preprocess_obs, get_action_mask
 
 # --- Hyperparameters ---
@@ -79,6 +81,10 @@ def evaluate_winrate(env, model, num_episodes=20):
 
 # --- Training Loop ---
 def train():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resume", type=str, help="Path to checkpoint to resume training from")
+    parser.add_argument("--load", type=str, help="Path to model to start fresh training from (fine-tune)")
+    args = parser.parse_args()
     env_raw = gym.make("BlackHole-v0")
     
     # Model Config
@@ -161,8 +167,48 @@ def train():
 
     log("Starting Training Loop...")
     
+    # --- Loading Logic ---
+    start_episode = 0
+    if args.resume:
+        if os.path.isfile(args.resume):
+            log(f"Resuming training from checkpoint: {args.resume}")
+            checkpoint = torch.load(args.resume, map_location=device)
+            if 'state_dict' in checkpoint:
+                current_model.load_state_dict(checkpoint['state_dict'])
+                target_model.load_state_dict(current_model.state_dict())
+                opponent_model.load_state_dict(current_model.state_dict())
+            else:
+                current_model.load_state_dict(checkpoint)
+                target_model.load_state_dict(checkpoint)
+                opponent_model.load_state_dict(checkpoint)
+            
+            if 'episode' in checkpoint:
+                start_episode = checkpoint['episode']
+                log(f"Resumed at Episode: {start_episode}")
+        else:
+            log(f"Error: {args.resume} not found")
+            return
+    elif args.load:
+        if os.path.isfile(args.load):
+            log(f"Loading pretrained weights: {args.load}")
+            checkpoint = torch.load(args.load, map_location=device)
+            if 'state_dict' in checkpoint:
+                current_model.load_state_dict(checkpoint['state_dict'])
+            else:
+                current_model.load_state_dict(checkpoint)
+            target_model.load_state_dict(current_model.state_dict())
+            opponent_model.load_state_dict(current_model.state_dict())
+            start_episode = 0
+        else:
+            log(f"Error: {args.load} not found")
+            return
+            
+    last_opponent_update_episode = start_episode if args.resume else 0
+
+    log("Starting Training Loop...")
+    
     try:
-        for episode in range(NUM_EPISODES):
+        for episode in range(start_episode, NUM_EPISODES):
             obs, _ = env.reset()
             done = False
             episode_reward = 0
