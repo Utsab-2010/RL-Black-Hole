@@ -357,12 +357,20 @@ def train():
         # Save Plot
         plt.figure(figsize=(12, 5))
         plt.subplot(1, 2, 1)
-        plt.plot(avg_rewards_log)
+        plt.plot(avg_rewards_log, label='Reward')
+        if len(avg_rewards_log) >= 5:
+             ma_rew = [np.mean(avg_rewards_log[max(0, i-4):i+1]) for i in range(len(avg_rewards_log))]
+             plt.plot(ma_rew, label='MA-5', linestyle='--')
+        plt.legend()
         plt.title("Avg Training Reward (Last 100 Episodes)")
         plt.xlabel(f"Eval Interval ({EVAL_INTERVAL} eps)")
         
         plt.subplot(1, 2, 2)
-        plt.plot(win_rates)
+        plt.plot(win_rates, label='Win Rate')
+        if len(win_rates) >= 5:
+             ma_wr = [np.mean(win_rates[max(0, i-4):i+1]) for i in range(len(win_rates))]
+             plt.plot(ma_wr, label='MA-5', linestyle='--')
+        plt.legend()
         plt.title(f"Win Rate vs Past Self (Update > {SELF_PLAY_UPDATE_THRESHOLD})")
         plt.xlabel(f"Eval Interval ({EVAL_INTERVAL} eps)")
         

@@ -616,11 +616,17 @@ def train():
                         plt.figure(figsize=(12, 5))
                         plt.subplot(1, 2, 1)
                         plt.plot(avg_rewards_log, label='Avg Reward')
+                        if len(avg_rewards_log) >= 5:
+                             ma_rew = [np.mean(avg_rewards_log[max(0, i-4):i+1]) for i in range(len(avg_rewards_log))]
+                             plt.plot(ma_rew, label='MA-5', linestyle='--')
                         plt.legend()
                         plt.title("Training Reward")
                         
                         plt.subplot(1, 2, 2)
                         plt.plot(win_rates, label='Win Rate')
+                        if len(win_rates) >= 5:
+                             ma_wr = [np.mean(win_rates[max(0, i-4):i+1]) for i in range(len(win_rates))]
+                             plt.plot(ma_wr, label='MA-5', linestyle='--')
                         plt.legend()
                         plt.title("Win Rate vs Opponent")
                         
@@ -687,11 +693,17 @@ def train():
             plt.figure(figsize=(12, 5))
             plt.subplot(1, 2, 1)
             plt.plot(avg_rewards_log, label='Avg Reward')
+            if len(avg_rewards_log) >= 5:
+                 ma_rew = [np.mean(avg_rewards_log[max(0, i-4):i+1]) for i in range(len(avg_rewards_log))]
+                 plt.plot(ma_rew, label='MA-5', linestyle='--')
             plt.legend()
             plt.title("Training Reward")
             
             plt.subplot(1, 2, 2)
             plt.plot(win_rates, label='Win Rate')
+            if len(win_rates) >= 5:
+                 ma_wr = [np.mean(win_rates[max(0, i-4):i+1]) for i in range(len(win_rates))]
+                 plt.plot(ma_wr, label='MA-5', linestyle='--')
             plt.legend()
             plt.title("Win Rate vs Opponent")
             

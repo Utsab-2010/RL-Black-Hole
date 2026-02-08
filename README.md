@@ -54,6 +54,24 @@ Good for debugging or understanding the flow.(use if no gpu)
 python train_dqn.py
 ```
 
+### Option 3: AlphaZero Training (Experimental)
+Trains a dual-headed model (Policy + Value) using MCTS-guided Self-Play.
+```powershell
+python train_alphazero.py
+```
+**Features**:
+- Uses **PUCT** (Polynomial Upper Confidence Trees) for selection.
+- Injects **Dirichlet Noise** at the root for exploration.
+- Trains on $(s, \pi, z)$ tuples: State, MCTS Policy, Game Outcome.
+- **Live Plotting**: Shows Loss and Moving Average Reward/WinRate.
+
+**Key Hyperparameters**:
+- `NUM_ITERATIONS`: Number of full training cycles (Self-Play -> Train).
+- `SELF_PLAY_EPISODES`: Games played per iteration to generate data.
+- `MCTS_SIMS`: Number of simulations per move (Teacher strength).
+- `BATCH_SIZE`: Minibatch size (64).
+- `EPOCHS`: Training passes per iteration (4).
+
 ### Training Output
 Artifacts are saved in `trained_models/BlackHole_DQN_v{X}/`:
 - `model.pth`: The trained model weights + config.
