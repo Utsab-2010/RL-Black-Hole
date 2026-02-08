@@ -41,6 +41,7 @@ python train_dqn_vector.py
 **Options**:
 - `--resume "path/to/checkpoint.pth"`: Resume training from a saved state (restore episode & weights).
 - `--load "path/to/model.pth"`: Start fresh training (Experiment 0) but initialized with trained weights (Fine-Tuning).
+- `--stochastic`: Use **Top-21 Softmax Sampling** (Full Distribution) for exploration instead of Epsilon-Greedy. Evaluation uses **Top-5**. Good for robust training.
 
 **Key Hyperparameters**:
 - `NUM_ENVS`: Number of parallel games (Default: 512).
@@ -72,7 +73,8 @@ python blackhole_test.py
 **Options**:
 - `--model "path/to/model.pth"`: Play against a specific model.
 - `--player 2`: Play as Player 2 (Green) instead of Player 1 (Red).
-- `--stochastic`: AI picks moves based on probability (Softmax) instead of pure calculation (Argmax). Makes the AI less predictable.
+- `--stochastic-p1`: Player 1 uses Top-3 Sampling instead of Argmax.
+- `--stochastic-p2`: Player 2 uses Top-3 Sampling instead of Argmax.
 
 ### 2. AI vs AI (Watch Mode)
 Watch two models battle it out.

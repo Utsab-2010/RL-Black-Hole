@@ -83,6 +83,7 @@ class QNetwork(nn.Module):
         prev_dim = mlp_input_dim
         for h_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, h_dim))
+            layers.append(nn.BatchNorm1d(h_dim)) # Added Normalization
             layers.append(nn.ReLU())
             prev_dim = h_dim
         

@@ -116,6 +116,7 @@ def get_ai_move(agent, obs, device, flip_board=False, stochastic=False):
             if probs.sum() > 0:
                 probs = probs / probs.sum()
                 action = torch.multinomial(probs, 1).item()
+                # print(probs)
             else:
                 # Fallback if numerical issues
                 action = q_values.argmax().item()
@@ -133,7 +134,8 @@ def main():
     parser.add_argument("--cpu", action="store_true", help="Force CPU inference")
     parser.add_argument("--sim", action="store_true", help="Run in headless simulation mode (AI vs AI only)")
     parser.add_argument("--num-games", type=int, default=100, help="Number of games to simulate in --sim mode")
-    parser.add_argument("--stochastic", action="store_true", help="Use probabilistic (softmax) sampling instead of deterministic argmax")
+    parser.add_argument("--stochastic-p1", action="store_true", help="Use probabilistic sampling for Player 1")
+    parser.add_argument("--stochastic-p2", action="store_true", help="Use probabilistic sampling for Player 2")
     args = parser.parse_args()
 
     # Determine Mode
@@ -202,7 +204,8 @@ def main():
                 
                 # Inference
                 flip = (current_p == 2)
-                action = get_ai_move(active_agent, obs, DEVICE, flip_board=flip, stochastic=args.stochastic)
+                use_stochastic = args.stochastic_p1 if current_p == 1 else args.stochastic_p2
+                action = get_ai_move(active_agent, obs, DEVICE, flip_board=flip, stochastic=use_stochastic)
                 
                 obs, reward, terminated, truncated, _ = env.step(action)
                 done = terminated or truncated
@@ -311,7 +314,8 @@ def main():
                 # Flip = True if P2, False if P1
                 flip = (current_p == 2)
                 
-                action = get_ai_move(active_agent, obs, DEVICE, flip_board=flip, stochastic=args.stochastic)
+                use_stochastic = args.stochastic_p1 if current_p == 1 else args.stochastic_p2
+                action = get_ai_move(active_agent, obs, DEVICE, flip_board=flip, stochastic=use_stochastic)
                 
                 print(f"AI ({'P1' if current_p==1 else 'P2'}) plays {action}")
                 obs, reward, terminated, truncated, info = env.step(action)

@@ -16,21 +16,21 @@ import argparse
 from black_hole.model import QNetwork, preprocess_batch, get_action_mask_batch, get_action_mask
 
 # --- Hyperparameters ---
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 3e-4
 GAMMA = 0.99
-EPSILON_START = 0.65
+EPSILON_START = 0.55
 EPSILON_END = 0.1
 BUFFER_SIZE = 5096
 BATCH_SIZE = 2048
 TARGET_UPDATE = 1000
 EVAL_INTERVAL = 100 # episodes
-SELF_PLAY_UPDATE_THRESHOLD = 0.75 # Win rate > 55% to update opponent
-NUM_EPISODES = 200000
-OPPONENT_UPDATE_MIN_EPISODES = 3000 # Wait 1000 episodes
+SELF_PLAY_UPDATE_THRESHOLD = 0.55 # Win rate > 55% to update opponent
+NUM_EPISODES = 1000000
+OPPONENT_UPDATE_MIN_EPISODES = 1500 # Wait 1000 episodes
 CHECKPOINT_INTERVAL = 5000 # Save checkpoint every N episodes
 NUM_CYCLIC_DECAY_CYCLES = 50 # Number of restart cycles for epsilon
 NUM_ENVS = 512
-OPPONENT_UPDATE_REQ_STREAK = 1 # Require N consecutive wins > threshold to update
+OPPONENT_UPDATE_REQ_STREAK = 3 # Require N consecutive wins > threshold to update
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -60,7 +60,19 @@ def evaluate_winrate(env, model, device, num_episodes=20):
             with torch.no_grad():
                 q_values = model(state_tensor)
                 q_values[~mask] = -float('inf')
-                action = q_values.argmax().item()
+                
+                # Top-5 Stochastic Sampling
+                probs = torch.softmax(q_values, dim=1) # (1, 21)
+                probs[0, ~mask.squeeze(0)] = 0
+                
+                # Get Top 5
+                top_probs, top_indices = probs.topk(min(3, mask.sum()), dim=1)
+                
+                # Renormalize
+                top_probs = top_probs / (top_probs.sum(dim=1, keepdim=True) + 1e-8)
+                
+                sample_idx = torch.multinomial(top_probs, 1) # Index into top_probs
+                action = top_indices.gather(1, sample_idx).item()
             
             obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
@@ -124,6 +136,7 @@ def train():
     parser = argparse.ArgumentParser()
     parser.add_argument("--resume", type=str, help="Path to checkpoint to resume training from")
     parser.add_argument("--load", type=str, help="Path to model to start fresh training from (fine-tune)")
+    parser.add_argument("--stochastic", action="store_true", help="Use stochastic (Top-10 Softmax) policy for training instead of Epsilon-Greedy")
     args = parser.parse_args()
 
     envs = gym.vector.SyncVectorEnv([
@@ -313,51 +326,81 @@ def train():
                 state_p1 = preprocess_batch(obs_p1, device)
                 mask_p1 = get_action_mask_batch(obs_p1, device)
                 
-                # Epsilon calculation
-                # Use global episode count for epsilon
-                cycle_len = NUM_EPISODES / NUM_CYCLIC_DECAY_CYCLES
-                current_cycle = int(episode_count / cycle_len)
-                cycle_progress = (episode_count % cycle_len) / cycle_len
-                cycle_max_eps = max(EPSILON_END, EPSILON_START - (current_cycle / NUM_CYCLIC_DECAY_CYCLES) * (EPSILON_START - EPSILON_END))
-                epsilon = EPSILON_END + (cycle_max_eps - EPSILON_END) * (1 - cycle_progress)
-                
-                # Epsilon Greedy
-                # Generate random numbers for each env in p1_indices
-                rands = np.random.random(len(p1_indices))
-                exploit_mask = rands >= epsilon
-                
-                # Random Actions
-                # We need valid moves.
-                # mask_p1 is (B, 21) bool
-                
-                p1_actions = np.zeros(len(p1_indices), dtype=int)
-                
-                # TODO: Vectorize random choice? 
-                # Loop for randoms is fast enough for small batch
-                for i, is_exploit in enumerate(exploit_mask):
-                    valid = torch.nonzero(mask_p1[i]).cpu().flatten().numpy()
-                    if len(valid) == 0:
-                        p1_actions[i] = 0 # Should not happen if game valid
-                    elif not is_exploit:
-                        p1_actions[i] = np.random.choice(valid)
-                    else:
-                        # Exploit placeholder (will fill with model)
-                        p1_actions[i] = -1 
-                
-                # Model Inference for exploiters
-                exploit_indices = np.where(exploit_mask)[0]
-                if len(exploit_indices) > 0:
-                    model_input = state_p1[exploit_indices]
-                    model_mask = mask_p1[exploit_indices]
-                    
+                # Action Selection Strategy
+                if args.stochastic:
+                    # --- Stochastic Policy (Top-10 Softmax) ---
+                    # Always use model (No Epsilon)
+                    # Input all states
                     current_model.eval()
                     with torch.no_grad():
-                        q_vals = current_model(model_input)
-                        q_vals[~model_mask] = -float('inf')
-                        best_acts = q_vals.argmax(dim=1).cpu().numpy()
+                        q_vals = current_model(state_p1) # (B, 21)
+                        # Mask invalid
+                        q_vals[~mask_p1] = -float('inf')
+                        
+                        # Softmax
+                        probs = torch.softmax(q_vals, dim=1) # (B, 21)
+                        # Zero out masked (redundant but safe)
+                        probs[~mask_p1] = 0
+                        
+                        # Top-10 Stochastic Sampling
+                        # We change to Top-21 (All valid essentially)
+                        # Action space is 21. topk(21) covers everything.
+                        top_probs, top_indices = probs.topk(21, dim=1) # (B, 21)
+                        
+                        # Renormalize
+                        # If sum is 0 (should not happen if mask valid), handle?
+                        prob_sums = top_probs.sum(dim=1, keepdim=True)
+                        top_probs = top_probs / (prob_sums + 1e-8)
+                        
+                        # Multinomial Sample
+                        # torch.multinomial needs (B, num_samples)
+                        sample_indices = torch.multinomial(top_probs, 1) # (B, 1) index into top_probs (0-9)
+                        
+                        # Map back to real actions
+                        final_actions = top_indices.gather(1, sample_indices).squeeze(1).cpu().numpy()
+                        
                     current_model.train()
+                    p1_actions = final_actions
+                    epsilon = 0.0
                     
-                    p1_actions[exploit_indices] = best_acts
+                else:
+                    # --- Epsilon Greedy Strategy ---
+                    # Epsilon calculation
+                    cycle_len = NUM_EPISODES / NUM_CYCLIC_DECAY_CYCLES
+                    current_cycle = int(episode_count / cycle_len)
+                    cycle_progress = (episode_count % cycle_len) / cycle_len
+                    cycle_max_eps = max(EPSILON_END, EPSILON_START - (current_cycle / NUM_CYCLIC_DECAY_CYCLES) * (EPSILON_START - EPSILON_END))
+                    epsilon = EPSILON_END + (cycle_max_eps - EPSILON_END) * (1 - cycle_progress)
+                    
+                    # Epsilon Greedy
+                    rands = np.random.random(len(p1_indices))
+                    exploit_mask = rands >= epsilon
+                    
+                    p1_actions = np.zeros(len(p1_indices), dtype=int)
+                    
+                    # Random Actions
+                    for i, is_exploit in enumerate(exploit_mask):
+                        if not is_exploit:
+                            valid = torch.nonzero(mask_p1[i]).cpu().flatten().numpy()
+                            if len(valid) == 0: p1_actions[i] = 0
+                            else: p1_actions[i] = np.random.choice(valid)
+                        else:
+                            p1_actions[i] = -1 
+                    
+                    # Exploit Actions
+                    exploit_indices = np.where(exploit_mask)[0]
+                    if len(exploit_indices) > 0:
+                        model_input = state_p1[exploit_indices]
+                        model_mask = mask_p1[exploit_indices]
+                        
+                        current_model.eval()
+                        with torch.no_grad():
+                            q_vals = current_model(model_input)
+                            q_vals[~model_mask] = -float('inf')
+                            best_acts = q_vals.argmax(dim=1).cpu().numpy()
+                        current_model.train()
+                        
+                        p1_actions[exploit_indices] = best_acts
                 
                 # Store actions
                 actions[p1_indices] = p1_actions
@@ -447,7 +490,18 @@ def train():
                 with torch.no_grad():
                     q_vals = opponent_model(state_p2)
                     q_vals[~mask_p2] = -float('inf')
-                    p2_actions = q_vals.argmax(dim=1).cpu().numpy()
+                    
+                    if args.stochastic:
+                        # Top-10 Stochastic for Opponent
+                        probs = torch.softmax(q_vals, dim=1)
+                        probs[~mask_p2] = 0
+                        top_probs, top_indices = probs.topk(10, dim=1)
+                        
+                        top_probs = top_probs / (top_probs.sum(dim=1, keepdim=True) + 1e-8)
+                        sample_idx = torch.multinomial(top_probs, 1)
+                        p2_actions = top_indices.gather(1, sample_idx).squeeze(1).cpu().numpy()
+                    else:
+                        p2_actions = q_vals.argmax(dim=1).cpu().numpy()
                 
                 actions[p2_indices] = p2_actions
 
