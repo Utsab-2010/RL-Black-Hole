@@ -1,0 +1,3 @@
+- Keep a better player network
+- Implement PPO training
+- Traing and test the alphazero model with atleast 3 hrs of training

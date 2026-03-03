@@ -51,28 +51,9 @@ class AlphaMCTS:
                 search_path.append(node)
                 
             # Evaluation & Expansion
-            value = self._evaluate(node)
-            
-            # If node was terminal, value is actual game result
+            # Check terminal first!
             if node.state.check_game_over():
                 winner, _ = node.state.calculate_score()
-                # Value for current player perspective
-                # winner 1 => Val=1. 
-                # If current_player (who just moved to get here) is 1, return 1.
-                # If current_player is 2, return -1.
-                # Usually network outputs V for current player.
-                # And calculate_score returns winner ID.
-                
-                # Logic:
-                # Node state has 'current_player' who is about to move.
-                # BUT the game is over.
-                # The winner is absolute.
-                # If winner == 1: V = 1.
-                # If winner == 2: V = -1.
-                # If winner == 0: V = 0.
-                # BUT we need V relative to whoever's turn it was supposed to be (or previous player)?
-                # Standard AlphaZero: V is always from perspective of current player state.
-                # If Game Over, V is ground truth.
                 
                 if winner == 1:
                     value = 1.0
@@ -81,17 +62,11 @@ class AlphaMCTS:
                 else:
                     value = 0.0
                     
-                # If it is P2's turn in this state (meaning P1 moved to get here),
-                # and P1 won (value=1), then for P2 this state is BAD (-1).
-                # Wait, standard:
-                # Score is always relative to 'current_player' of the state.
-                # If current_player is 2, and winner is 1, return -1.
-                
                 cp = node.state.current_player
                 if cp == 2: value = -value 
                 
             else:
-                self._expand_node(node)
+                value = self._evaluate(node)
             
             # Backpropagation
             self._backpropagate(search_path, value, node.state.current_player)

@@ -9,15 +9,15 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from collections import deque
 from black_hole.game import BlackHoleGame
-from black_hole.model import AlphaBH, preprocess_obs
+from black_hole.model import AlphaBH, preprocess_obs, preprocess_batch
 from black_hole.mcts import AlphaMCTS
 
 # Hyperparameters
-NUM_ITERATIONS = 50   # Total loops
-SELF_PLAY_EPISODES = 5 # Games per iteration
-MCTS_SIMS = 50        # Simulations per move (Low for speed, increase later)
-BATCH_SIZE = 64
-EPOCHS = 4            # Training epochs per iteration
+TRAINING_ITERATIONS = 50       # Total training loops (Self-Play -> Train)
+SELF_PLAY_EPISODES = 5         # Games played per iteration to generate data
+MCTS_SIMS = 50                 # MCTS simulations per move (Teacher strength)
+BATCH_SIZE = 64                # Minibatch size for training
+TRAINING_EPOCHS_PER_ITER = 4   # Passes through the buffer per iteration
 LEARNING_RATE = 0.001
 BUFFER_SIZE = 5000
 PLOT_WINDOW = 5
@@ -138,7 +138,7 @@ def train(agent, optimizer, buffer, device):
     agent.train()
     running_loss = 0.0
     
-    for _ in range(EPOCHS):
+    for _ in range(TRAINING_EPOCHS_PER_ITER):
         if len(buffer) < BATCH_SIZE: break
         
         states, target_pis, target_vs = buffer.sample(BATCH_SIZE)
@@ -153,14 +153,7 @@ def train(agent, optimizer, buffer, device):
             "current_tile": np.array([s["current_tile"] for s in states])
         }
         
-        input_tensor = preprocess_obs(batch_obs, device) # Wait, preprocess_obs is for single?
-        # We should use batch version or ensure logic works.
-        # Let's use custom collation here.
-        
-        boards = torch.tensor(batch_obs["board"], dtype=torch.float32, device=device)
-        tiles = torch.tensor(batch_obs["current_tile"], dtype=torch.float32, device=device).unsqueeze(1)
-        boards_flat = boards.view(BATCH_SIZE, -1)
-        input_tensor = torch.cat([boards_flat, tiles], dim=1)
+        input_tensor = preprocess_batch(batch_obs, device) 
         
         target_pis = torch.tensor(np.array(target_pis), dtype=torch.float32, device=device)
         target_vs = torch.tensor(np.array(target_vs), dtype=torch.float32, device=device).unsqueeze(1)
@@ -186,7 +179,7 @@ def train(agent, optimizer, buffer, device):
         
         running_loss += loss.item()
         
-    return running_loss / EPOCHS
+        return running_loss / TRAINING_EPOCHS_PER_ITER
 
 def moving_average(data, window_size=5):
     if len(data) < window_size:
@@ -211,7 +204,7 @@ def main():
     plt.ion()
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
     
-    for iteration in range(NUM_ITERATIONS):
+    for iteration in range(TRAINING_ITERATIONS):
         print(f"--- Iteration {iteration+1} ---")
         
         # 1. Self Play

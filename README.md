@@ -66,11 +66,11 @@ python train_alphazero.py
 - **Live Plotting**: Shows Loss and Moving Average Reward/WinRate.
 
 **Key Hyperparameters**:
-- `NUM_ITERATIONS`: Number of full training cycles (Self-Play -> Train).
+- `TRAINING_ITERATIONS`: Total training loops (Self-Play -> Train).
 - `SELF_PLAY_EPISODES`: Games played per iteration to generate data.
-- `MCTS_SIMS`: Number of simulations per move (Teacher strength).
+- `MCTS_SIMS`: Simulations per move (Teacher strength).
 - `BATCH_SIZE`: Minibatch size (64).
-- `EPOCHS`: Training passes per iteration (4).
+- `TRAINING_EPOCHS_PER_ITER`: Passes through the buffer per iteration.
 
 ### Training Output
 Artifacts are saved in `trained_models/BlackHole_DQN_v{X}/`:

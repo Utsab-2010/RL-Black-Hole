@@ -55,10 +55,10 @@ class QNetwork(nn.Module):
         self.start_val = start_val 
 
         # ResNet Config (Downscaling)
-        self.map_channels = 2 # Opponent, Player
+        self.map_channels = 1 # Single channel: Self (1), Opponent (-1), Empty (0)
         
         # Initial Conv (6x6)
-        # 2 -> 32
+        # 1 -> 32
         self.conv_in = nn.Conv2d(self.map_channels, 32, kernel_size=3, padding=1, bias=False)
         self.bn_in = nn.BatchNorm2d(32)
         self.relu = nn.ReLU(inplace=True)
@@ -106,15 +106,14 @@ class QNetwork(nn.Module):
         board_data = x[:, :42].view(batch_size, 21, 2)
         players = board_data[:, :, 0] # (Batch, 21)
         
-        grid = torch.full((batch_size, 2, 6, 6), self.start_val, device=device, dtype=torch.float32)
+        grid = torch.full((batch_size, 1, 6, 6), self.start_val, device=device, dtype=torch.float32)
         
         rows = torch.tensor([r for r, c in self.pos_map], device=device)
         cols = torch.tensor([c for r, c in self.pos_map], device=device)
         
         # Fill Lower Triangle
-        # Plane 1: Player 1 (val 1), Plane 2: Player 2 (val 2)
-        grid[:, 0, rows, cols] = (players == 1).float() * 1.0
-        grid[:, 1, rows, cols] = (players == 2).float() * 2.0
+        # We assume input is canonicalized: Self is 1, Opponent is 2
+        grid[:, 0, rows, cols] = (players == 1).float() * 1.0 + (players == 2).float() * -1.0
         
         # 2. ResNet Encoding
         out = self.conv_in(grid)
@@ -161,7 +160,7 @@ class AlphaBH(nn.Module):
         self.start_val = start_val 
 
         # ResNet Config (Downscaling)
-        self.map_channels = 2 # Opponent, Player
+        self.map_channels = 1 # Opponent, Player
         
         # Initial Conv (6x6)
         # 2 -> 32
@@ -223,15 +222,14 @@ class AlphaBH(nn.Module):
         board_data = x[:, :42].view(batch_size, 21, 2)
         players = board_data[:, :, 0] # (Batch, 21)
         
-        grid = torch.full((batch_size, 2, 6, 6), self.start_val, device=device, dtype=torch.float32)
+        grid = torch.full((batch_size, 1, 6, 6), self.start_val, device=device, dtype=torch.float32)
         
         rows = torch.tensor([r for r, c in self.pos_map], device=device)
         cols = torch.tensor([c for r, c in self.pos_map], device=device)
         
         # Fill Lower Triangle
-        # Plane 1: Player 1 (val 1), Plane 2: Player 2 (val 2)
-        grid[:, 0, rows, cols] = (players == 1).float() * 1.0
-        grid[:, 1, rows, cols] = (players == 2).float() * 2.0
+        # We assume input is canonicalized: Self is 1, Opponent is 2
+        grid[:, 0, rows, cols] = (players == 1).float() * 1.0 + (players == 2).float() * -1.0
         
         # 2. ResNet Encoding
         out = self.conv_in(grid)
