@@ -1,3 +1,4 @@
 - Keep a better player network
 - Implement PPO training
 - Traing and test the alphazero model with atleast 3 hrs of training
+- Implement C++ MCTS tree backend to alleviate GIL and fast traversal overhead.

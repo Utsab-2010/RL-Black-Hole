@@ -94,7 +94,7 @@ def get_ai_move(agent, obs, device, flip_board=False, stochastic=False):
         ai_obs = {
             "board": ai_board,
             "current_player": 1, # Canonical P1
-            "current_tile": obs["current_tile"] # Is current tile specific to player? Usually 1-10 sequence.
+            "current_tile": 0 # Dummy value, ignored by network now
         }
     else:
         ai_obs = obs

@@ -2,6 +2,6 @@ __pycache__/
 *.pyc
 trained_models/
 models_alphazero/
-
+AlphaZero State Refactor.md
 
  

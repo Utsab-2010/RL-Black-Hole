@@ -54,23 +54,24 @@ Good for debugging or understanding the flow.(use if no gpu)
 python train_dqn.py
 ```
 
-### Option 3: AlphaZero Training (Experimental)
-Trains a dual-headed model (Policy + Value) using MCTS-guided Self-Play.
+### Option 3: Vectorized AlphaZero Training (Experimental)
+Trains a dual-headed model (Policy + Value) using highly optimized, batched **MCTS Self-Play**.
 ```powershell
 python train_alphazero.py
 ```
-**Features**:
-- Uses **PUCT** (Polynomial Upper Confidence Trees) for selection.
-- Injects **Dirichlet Noise** at the root for exploration.
-- Trains on $(s, \pi, z)$ tuples: State, MCTS Policy, Game Outcome.
-- **Live Plotting**: Shows Loss and Moving Average Reward/WinRate.
+- **Batched Inference**: Extensively parallelized self-play. Passes multiple active MCTS tree queries through the network at once for extreme speedups.
+- **Checkpoint Resuming**: Full support for continuing long training sessions without losing optimizer state (`--resume "/path/to/model.pth"`).
+- **Fine-Tuning**: Start fresh training runs with pretrained weights (`--load "/path/to/model.pth"`).
+- **Live Evaluating**: Halts training every `EVAL_INTERVAL` iterations to test greedy network policy performance (P1 & P2 pairs) against pure random moves.
+- **Auto-plotting**: Saves and seamlessly appends to `training_plot.png` showing Loss, Self-Play MCTS Reward, and Eval vs Random Reward.
 
 **Key Hyperparameters**:
 - `TRAINING_ITERATIONS`: Total training loops (Self-Play -> Train).
-- `SELF_PLAY_EPISODES`: Games played per iteration to generate data.
-- `MCTS_SIMS`: Simulations per move (Teacher strength).
-- `BATCH_SIZE`: Minibatch size (64).
-- `TRAINING_EPOCHS_PER_ITER`: Passes through the buffer per iteration.
+- `SELF_PLAY_EPISODES`: Parallel games played per iteration to generate data.
+- `MCTS_SIMS`: Simulations per move (Teacher strength, e.g., 50-200).
+- `BATCH_SIZE`: Minibatch size (e.g., 256).
+- `TRAINING_EPOCHS_PER_ITER`: Passes through the replay buffer per iteration.
+- `EVAL_INTERVAL`: How often to test the raw network against a random baseline.
 
 ### Training Output
 Artifacts are saved in `trained_models/BlackHole_DQN_v{X}/`:

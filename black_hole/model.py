@@ -32,18 +32,10 @@ class ResBlock(nn.Module):
         out = self.relu(out)
         return out
 
-def get_sinusoidal_embeddings(max_len, d_model):
-    pe = torch.zeros(max_len, d_model)
-    position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-    # div_term = 10000^(2i/d_model)
-    div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
-    
-    pe[:, 0::2] = torch.sin(position * div_term)
-    pe[:, 1::2] = torch.cos(position * div_term)
-    return pe
+
 
 class QNetwork(nn.Module):
-    def __init__(self, pos_dim=4, val_dim=4, player_dim=3, hidden_dims=[128, 64], start_val=-10):
+    def __init__(self, pos_dim=4, val_dim=4, player_dim=3, hidden_dims=[128, 64], start_val=-1000):
         super(QNetwork, self).__init__()
         self.config = {
             'pos_dim': pos_dim,
@@ -71,13 +63,8 @@ class QNetwork(nn.Module):
         # Final flattened size: 256 * 1 * 1 = 256
         self.flattened_res_size = 256
         
-        # Turn Embedding (Fixed Sinusoidal)
-        self.turn_dim = 16
-        # Register as buffer so it's saved with state_dict but not optimized
-        self.register_buffer('turn_emb_table', get_sinusoidal_embeddings(22, self.turn_dim))
-        
         # MLP Head
-        mlp_input_dim = self.flattened_res_size + self.turn_dim
+        mlp_input_dim = self.flattened_res_size
         
         layers = []
         prev_dim = mlp_input_dim
@@ -102,9 +89,10 @@ class QNetwork(nn.Module):
         batch_size = x.shape[0]
         device = x.device
         
-        # 1. Transform state to 6x6x2
+        # 1. Transform state to 6x6x1
         board_data = x[:, :42].view(batch_size, 21, 2)
-        players = board_data[:, :, 0] # (Batch, 21)
+        players = board_data[:, :, 0] # (Batch, 21) => 1 for Self, 2 for Opponent
+        values = board_data[:, :, 1]  # (Batch, 21) => 1 through 10
         
         grid = torch.full((batch_size, 1, 6, 6), self.start_val, device=device, dtype=torch.float32)
         
@@ -113,7 +101,13 @@ class QNetwork(nn.Module):
         
         # Fill Lower Triangle
         # We assume input is canonicalized: Self is 1, Opponent is 2
-        grid[:, 0, rows, cols] = (players == 1).float() * 1.0 + (players == 2).float() * -1.0
+        # Tile weights are normalized from [1, 10] to [0.1, 1.0]
+        # Self tiles are positive (+), Opponent tiles are negative (-)
+        normalized_values = values.float() / 10.0
+        
+        p1_weights = (players == 1).float() * normalized_values
+        p2_weights = (players == 2).float() * -normalized_values
+        grid[:, 0, rows, cols] = p1_weights + p2_weights
         
         # 2. ResNet Encoding
         out = self.conv_in(grid)
@@ -127,15 +121,8 @@ class QNetwork(nn.Module):
         # Flatten
         out = out.view(batch_size, -1) # (B, 256)
         
-        # 3. Turn Encoding
-        turn_count = (players != 0).sum(dim=1) # (B,)
-        turn_emb = self.turn_emb_table[turn_count] # (B, 16)
-        
-        # Concatenate
-        combined = torch.cat([out, turn_emb], dim=1)
-        
         # 4. MLP
-        logits = self.mlp(combined) 
+        logits = self.mlp(out) 
         output = self.output_head(logits) # (B, 21)
         
         # 5. Masking and Softmax
@@ -148,7 +135,7 @@ class QNetwork(nn.Module):
         return final_values
 
 class AlphaBH(nn.Module):
-    def __init__(self, pos_dim=4, val_dim=4, player_dim=3, hidden_dims=[128, 64], start_val=-10):
+    def __init__(self, pos_dim=4, val_dim=4, player_dim=3, hidden_dims=[128, 64], start_val=-1000):
         super(AlphaBH, self).__init__()
         self.config = {
             'pos_dim': pos_dim,
@@ -176,13 +163,8 @@ class AlphaBH(nn.Module):
         # Final flattened size: 256 * 1 * 1 = 256
         self.flattened_res_size = 256
         
-        # Turn Embedding (Fixed Sinusoidal)
-        self.turn_dim = 16
-        # Register as buffer so it's saved with state_dict but not optimized
-        self.register_buffer('turn_emb_table', get_sinusoidal_embeddings(22, self.turn_dim))
-        
         # Common MLP Body
-        mlp_input_dim = self.flattened_res_size + self.turn_dim
+        mlp_input_dim = self.flattened_res_size
         
         layers = []
         prev_dim = mlp_input_dim
@@ -218,9 +200,10 @@ class AlphaBH(nn.Module):
         batch_size = x.shape[0]
         device = x.device
         
-        # 1. Transform state to 6x6x2
+        # 1. Transform state to 6x6x1
         board_data = x[:, :42].view(batch_size, 21, 2)
-        players = board_data[:, :, 0] # (Batch, 21)
+        players = board_data[:, :, 0] # (Batch, 21) => 1 for Self, 2 for Opponent
+        values = board_data[:, :, 1]  # (Batch, 21) => 1 through 10
         
         grid = torch.full((batch_size, 1, 6, 6), self.start_val, device=device, dtype=torch.float32)
         
@@ -229,7 +212,13 @@ class AlphaBH(nn.Module):
         
         # Fill Lower Triangle
         # We assume input is canonicalized: Self is 1, Opponent is 2
-        grid[:, 0, rows, cols] = (players == 1).float() * 1.0 + (players == 2).float() * -1.0
+        # Tile weights are normalized from [1, 10] to [0.1, 1.0]
+        # Self tiles are positive (+), Opponent tiles are negative (-)
+        normalized_values = values.float() / 10.0
+        
+        p1_weights = (players == 1).float() * normalized_values
+        p2_weights = (players == 2).float() * -normalized_values
+        grid[:, 0, rows, cols] = p1_weights + p2_weights
         
         # 2. ResNet Encoding
         out = self.conv_in(grid)
@@ -243,15 +232,8 @@ class AlphaBH(nn.Module):
         # Flatten
         out = out.view(batch_size, -1) # (B, 256)
         
-        # 3. Turn Encoding
-        turn_count = (players != 0).sum(dim=1) # (B,)
-        turn_emb = self.turn_emb_table[turn_count] # (B, 16)
-        
-        # Concatenate
-        combined = torch.cat([out, turn_emb], dim=1)
-        
         # 4. Body
-        features = self.body(combined)
+        features = self.body(out)
         
         # 5. Heads
         policy_logits = self.policy_head(features)
@@ -262,12 +244,15 @@ class AlphaBH(nn.Module):
 def preprocess_batch(obs, device):
     # obs is dictionary of stacked arrays from VectorEnv
     # board: (B, 21, 2)
-    # current_tile: (B,)
+    # The current_tile is ignored by the actual networks now, so we just
+    # flatten the board identically padding behavior for legacy inputs.
     
     board = torch.tensor(obs["board"], dtype=torch.float32, device=device)
     board_flat = board.view(board.shape[0], -1) # (B, 42)
     
-    current_tile = torch.tensor(obs["current_tile"], dtype=torch.float32, device=device).unsqueeze(1) # (B, 1)
+    # We still append a dummy 0 for current_tile so old shapes (43) don't break scripts
+    # before they are updated, though the network actually only reads the first 42.
+    current_tile = torch.zeros((board.shape[0], 1), dtype=torch.float32, device=device)
     
     features = torch.cat([board_flat, current_tile], dim=1) # (B, 43)
     return features

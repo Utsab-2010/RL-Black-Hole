@@ -24,7 +24,7 @@ TEXT_COLOR = (255, 255, 255)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def find_latest_model(base_dir="models_alphazero"):
+def find_latest_model(base_dir="trained_models"):
     if not os.path.exists(base_dir):
         return None
     
@@ -77,14 +77,17 @@ def get_ai_move(agent, obs, device, flip_board=False, stochastic=False, use_mcts
         ai_board[p1_mask, 0] = 2
         ai_board[p2_mask, 0] = 1
         
+        # The model no longer needs current_tile, but preprocess_obs expects a dict
+        # We will pass a dummy current_tile just to satisfy preprocess_obs padding logic
+        # if it still looks for it, or just pass the board.
         ai_obs = {
             "board": ai_board,
-            "current_player": 2, 
-            "current_tile": obs["current_tile"],
+            "current_player": 2, # Canonical player for flipped board
+            "current_tile": 0, # Dummy value, ignored by network now
             "tiles_placed": np.sum(ai_board[:, 0] != 0)
         }
     else:
-        ai_obs = obs
+        ai_obs = obs.copy() # Make a copy to avoid modifying the original obs
         ai_obs["tiles_placed"] = np.sum(obs["board"][:, 0] != 0)
 
     # Use MCTS
@@ -155,7 +158,7 @@ def main():
              path = find_latest_model()
              
         if not path:
-            print("No AlphaZero model found in models_alphazero/!")
+            print("No AlphaZero model found in trained_models/!")
             return
             
         print(f"Loading Model: {path}")

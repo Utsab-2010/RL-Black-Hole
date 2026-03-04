@@ -398,5 +398,5 @@ def train():
             f.write(f"Final Win Rate (vs Opponent): {win_rates[-1] if win_rates else 'N/A'}\n")
         print(f"Training summary saved to {log_path}")
     
-    if __name__ == "__main__":
-        train()
+if __name__ == "__main__":
+    train()

@@ -86,8 +86,79 @@ class AlphaMCTS:
             denom = sum(n ** (1/temperature) for n in counts.values())
             for a, n in counts.items():
                 probs[a] = (n ** (1/temperature)) / denom
-                
         return probs
+
+    def run_batched(self, states, num_simulations=800, temperature=1.0):
+        """
+        Runs MCTS for multiple games in parallel.
+        states: List of BlackHoleGame instances.
+        Returns: List of probability distributions corresponding to each state.
+        """
+        num_games = len(states)
+        if num_games == 0:
+            return []
+            
+        # 1. Create Roots
+        roots = [MCTSNode(copy.deepcopy(state)) for state in states]
+        
+        # Expand and add noise to all roots
+        for root in roots:
+            self._expand_node_batched(root) # Minimal expansion needed to get valid moves
+            self._add_dirichlet_noise(root)
+            
+        # 2. Simulations
+        for _ in range(num_simulations):
+            search_paths = []
+            leaves_to_eval = []
+            
+            # Selection for all games
+            for root in roots:
+                node = root
+                path = [node]
+                
+                while node.is_expanded and node.children:
+                    action, node = self._select_child(node)
+                    path.append(node)
+                    
+                search_paths.append(path)
+                
+                # Check terminal first
+                if node.state.check_game_over():
+                    winner, _ = node.state.calculate_score()
+                    if winner == 1: value = 1.0
+                    elif winner == 2: value = -1.0
+                    else: value = 0.0
+                    
+                    cp = node.state.current_player
+                    if cp == 2: value = -value 
+                    
+                    # Backprop immediately for terminal states
+                    self._backpropagate(path, value, node.state.current_player)
+                else:
+                    leaves_to_eval.append((node, path))
+            
+            # Batch Evaluation & Expansion
+            if leaves_to_eval:
+                self._evaluate_batched(leaves_to_eval)
+                
+        # 3. Generate Policies
+        all_probs = []
+        for root in roots:
+            counts = {a: child.visits for a, child in root.children.items()}
+            total = sum(counts.values())
+            probs = np.zeros(21)
+            
+            if total > 0:
+                if temperature == 0:
+                    best_a = max(counts, key=counts.get)
+                    probs[best_a] = 1.0
+                else:
+                    denom = sum(n ** (1/temperature) for n in counts.values())
+                    for a, n in counts.items():
+                        probs[a] = (n ** (1/temperature)) / denom
+            all_probs.append(probs)
+            
+        return all_probs
 
     def _select_child(self, node):
         best_score = -float('inf')
@@ -153,8 +224,33 @@ class AlphaMCTS:
         # Evaluate(node) -> P, v.
         # Create children using P.
         
-        # I did _evaluate inside proper flow.
         pass # Handling in Evaluate
+
+    def _expand_node_batched(self, node):
+        if node.is_expanded or node.state.check_game_over():
+            return
+            
+        # Minimal initialization so _select_child doesn't fail on root initially
+        # True expansion with Network Priors happens in _evaluate_batched
+        valid_moves = node.state.get_valid_moves()
+        uniform_prob = 1.0 / len(valid_moves) if valid_moves else 0.0
+        
+        for action in valid_moves:
+            next_state = copy.deepcopy(node.state)
+            tile_val = (next_state.tiles_placed // 2) + 1
+            if tile_val > 10: tile_val = 10
+            next_state.make_move(action, tile_val)
+            
+            child = MCTSNode(next_state, parent=node, prior_prob=uniform_prob)
+            node.children[action] = child
+
+        # We don't mark as expanded here for roots until network assigns real priors
+        # Actually for roots, we need to mark expanded so noise can be added.
+        # It's cleaner to let the first batch eval handle the roots.
+        # We will handle root network init outside if needed, but AlphaZero 
+        # normally does 1 NN pass for roots too.
+        # Given our current architecture, the root will just get uniform priors first
+        # then noise, then the 1st simulation will replace child nodes with actual priors.
 
     def _evaluate(self, node):
         # Prepare Input
@@ -212,6 +308,81 @@ class AlphaMCTS:
             
         node.is_expanded = True
         return value
+
+    def _evaluate_batched(self, leaves_data):
+        """
+        leaves_data: List of tuples (node, path)
+        """
+        nodes = [data[0] for data in leaves_data]
+        paths = [data[1] for data in leaves_data]
+        batch_size = len(nodes)
+        
+        # Prepare Batch Input
+        boards = np.zeros((batch_size, 21, 2), dtype=int)
+        tiles = np.zeros(batch_size, dtype=int)
+        
+        for i, node in enumerate(nodes):
+            obs = {
+                "board": node.state.board.copy(),
+                "current_tile": (node.state.tiles_placed // 2) + 1
+            }
+            
+            if node.state.current_player == 2:
+                board = obs["board"]
+                p1 = (board[:, 0] == 1)
+                p2 = (board[:, 0] == 2)
+                board[p1, 0] = 2
+                board[p2, 0] = 1
+                obs["board"] = board
+                
+            boards[i] = obs["board"]
+            tiles[i] = obs["current_tile"]
+            
+        # Convert to Tensor (similar to preprocess_batch format)
+        from black_hole.model import preprocess_batch
+        batch_obs = {"board": boards, "current_tile": tiles}
+        state_tensor = preprocess_batch(batch_obs, self.device)
+        
+        self.model.eval()
+        with torch.no_grad():
+            policy_logits, values = self.model(state_tensor)
+            
+        policy_probs = torch.softmax(policy_logits, dim=1).cpu().numpy()
+        values = values.cpu().numpy()
+
+        # Update Nodes and Backpropagate
+        for i, node in enumerate(nodes):
+            value = values[i][0]
+            probs = policy_probs[i]
+            
+            valid_moves = node.state.get_valid_moves()
+            valid_probs = probs[valid_moves]
+            sum_probs = valid_probs.sum()
+            
+            if sum_probs > 0:
+                valid_probs /= sum_probs
+            else:
+                valid_probs = np.ones_like(valid_probs) / len(valid_probs)
+                
+            # Overwrite or expand children with new priors
+            for j, action in enumerate(valid_moves):
+                if action in node.children:
+                    # Root initially expanded uniformly
+                    node.children[action].prior_prob = valid_probs[j]
+                else:
+                    # New expansion
+                    next_state = copy.deepcopy(node.state)
+                    tile_val = (next_state.tiles_placed // 2) + 1
+                    if tile_val > 10: tile_val = 10
+                    next_state.make_move(action, tile_val)
+                    
+                    child = MCTSNode(next_state, parent=node, prior_prob=valid_probs[j])
+                    node.children[action] = child
+                    
+            node.is_expanded = True
+            
+            # Backprop for this specific path
+            self._backpropagate(paths[i], float(value), node.state.current_player)
 
     def _backpropagate(self, path, value, leaf_player):
         # value is V(s_leaf) from perspective of leaf_player.

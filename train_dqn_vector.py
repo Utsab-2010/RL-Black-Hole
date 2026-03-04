@@ -155,8 +155,7 @@ def train():
     def opponent_policy_fn(obs):
         # Input obs is canonical dictionary (single)
         obs_batch = {
-            "board": np.expand_dims(obs["board"], axis=0),
-            "current_tile": np.expand_dims(obs["current_tile"], axis=0)
+            "board": np.expand_dims(obs["board"], axis=0) # Only Board is needed now
         }
         state = preprocess_batch(obs_batch, device)
         with torch.no_grad():
