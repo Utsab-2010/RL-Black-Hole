@@ -20,14 +20,15 @@ from black_hole.mcts import AlphaMCTS
 TRAINING_ITERATIONS = 2000       # Total training loops (Self-Play -> Train)
 SELF_PLAY_EPISODES = 20         # Games played per iteration to generate data
 MCTS_SIMS = 10                 # MCTS simulations per move (Teacher strength)
+MCTS_SIMS_EVAL = 8            # MCTS simulations during eval vs random
 BATCH_SIZE = 512                # Minibatch size for training
 TRAINING_EPOCHS_PER_ITER = 8   # Passes through the buffer per iteration
 LEARNING_RATE = 0.2
-LR_DECAY = 0.95
+LR_DECAY = 0.99
 BUFFER_SIZE = 4096
 PLOT_WINDOW = 5
 EVAL_INTERVAL = 1       # Run eval every N iterations
-EVAL_GAMES = 20        # Games per role (x2 for P1+P2)
+EVAL_GAMES = 5        # Games per role (x2 for P1+P2)
 
 LOG_LINES = ["Iteration,Loss,AvgReward\n"]
 
@@ -176,9 +177,9 @@ def train(agent, optimizer, buffer, device):
     
     return running_loss / TRAINING_EPOCHS_PER_ITER
 
-def eval_vs_random(agent, device, games_per_role=20):
+def eval_vs_random(agent, mcts, device, games_per_role=20):
     """
-    Plays agent vs a pure random opponent.
+    Plays agent vs a pure random opponent using MCTS for decision making.
     Runs games_per_role games as P1 and games_per_role games as P2.
     Returns average reward from the agent's perspective.
     """
@@ -194,24 +195,9 @@ def eval_vs_random(agent, device, games_per_role=20):
                 if tile_val > 10: tile_val = 10
 
                 if game.current_player == role:
-                    # Agent's turn — use network policy directly (no MCTS for speed)
-                    obs = {"board": game.board.copy(), "current_tile": tile_val}
-                    # Canonicalize if agent is P2
-                    if role == 2:
-                        board = obs["board"]
-                        p1 = (board[:, 0] == 1)
-                        p2 = (board[:, 0] == 2)
-                        board[p1, 0] = 2
-                        board[p2, 0] = 1
-                    state_tensor = preprocess_obs(obs, device).unsqueeze(0)
-                    with torch.no_grad():
-                        policy_logits, _ = agent(state_tensor)
-                        # Mask filled positions
-                        valid = game.get_valid_moves()
-                        mask = torch.full((1, 21), -float('inf'), device=device)
-                        mask[0, valid] = 0
-                        policy_logits = policy_logits + mask
-                        action = torch.argmax(policy_logits, dim=1).item()
+                    # Agent's turn — use MCTS policy
+                    probs = mcts.run(game, num_simulations=MCTS_SIMS_EVAL, temperature=0.0)
+                    action = np.argmax(probs)
                 else:
                     # Random opponent
                     action = random.choice(game.get_valid_moves())
@@ -243,7 +229,7 @@ def main():
     print(f"Using device: {device}")
     
     agent = AlphaBH().to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.SGD(agent.parameters(), lr=LEARNING_RATE)
     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=LR_DECAY)
     mcts = AlphaMCTS(agent, device)
     buffer = ReplayBuffer(BUFFER_SIZE)
@@ -326,7 +312,8 @@ def main():
             train_losses.append(loss)
             
             # Decay learning rate
-            scheduler.step()
+            if iteration % 20 == 0:
+                scheduler.step()
             current_lr = scheduler.get_last_lr()[0]
             
             # Log
@@ -340,7 +327,7 @@ def main():
         # 2.5 Eval vs random (every EVAL_INTERVAL iterations)
         if (iteration + 1) % EVAL_INTERVAL == 0:
             print(f"--- Eval vs Random (Iteration {iteration+1}) ---")
-            eval_reward = eval_vs_random(agent, device, games_per_role=EVAL_GAMES)
+            eval_reward = eval_vs_random(agent, mcts, device, games_per_role=EVAL_GAMES)
             eval_results.append((iteration + 1, eval_reward))
 
         # 3. Save updated plot each iteration (create fresh, close after)

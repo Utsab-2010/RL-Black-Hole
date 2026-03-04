@@ -68,10 +68,11 @@ python train_alphazero.py
 **Key Hyperparameters**:
 - `TRAINING_ITERATIONS`: Total training loops (Self-Play -> Train).
 - `SELF_PLAY_EPISODES`: Parallel games played per iteration to generate data.
-- `MCTS_SIMS`: Simulations per move (Teacher strength, e.g., 50-200).
+- `MCTS_SIMS`: Simulations per move during self-play data generation (e.g., 10).
+- `MCTS_SIMS_EVAL`: Evaluations per move against random baseline to truly measure model intelligence (e.g., 50).
 - `BATCH_SIZE`: Minibatch size (e.g., 256).
 - `TRAINING_EPOCHS_PER_ITER`: Passes through the replay buffer per iteration.
-- `EVAL_INTERVAL`: How often to test the raw network against a random baseline.
+- `EVAL_INTERVAL`: How often to test the model (using `MCTS_SIMS_EVAL`) against a random baseline.
 
 ### Training Output
 Artifacts are saved in `trained_models/BlackHole_DQN_v{X}/`:
@@ -107,18 +108,31 @@ Quickly simulate 100 games between two models without graphics to get win rates.
 python blackhole_test.py --sim --p1 "model_A.pth" --p2 "model_B.pth" --num-games 100
 ```
 
+### 4. AlphaZero Testing (MCTS)
+If you trained an AlphaZero model, you must test it using MCTS-guided search to see its true strength.
+```powershell
+python blackhole_test_alphazero.py
+```
+**AlphaZero Options**:
+- `--model "path/to/model.pth"`: Play against a specific model.
+- `--eval-sims 50`: Set the MCTS search depth/strength during the match (Default: 50).
+- `--no-mcts`: Disable search and play purely on the network's raw intuition (Fast but weak).
+- `--sim`, `--p1`, `--p2`, `--num-games`: Same benchmarking commands as above.
+
 ### Game Controls
 - **You are Player 1 (Red)** or **Player 2 (Green)**.
 - **Click** on any valid circle to place your tile.
 - The game automatically handles the AI's turn (with 0.3s delay).
-- The game automatically handles the AI's turn.
 
 ## 🤖 Model Architecture (ResNet-18)
 
 The model logic is centralized in `black_hole/model.py`.
-- **Input**: 6x6x2 Grid (Plane 1 = Player 1, Plane 2 = Player 2).
+- **Input**: 6x6x1 Grid (Single Channel).
+  - **Tile Weights**: The true tile values (1-10) are mathematically normalized to [0.1, 1.0].
+  - **Ownership**: Player 1's tiles are given positive signs (+), and Player 2's pieces are given negative signs (-).
+  - **Void Cells**: Padded with a highly penalized `-1000.0` to explicitly carve the 21-hex triangle out of the square grid matrix.
 - **Backbone**: **ResNet-18** style CNN blocks (32 -> 64 -> 128 -> 256 channels).
-- **Time/Turn Encoding**: **Sinusoidal Embeddings** (Transformer-style) injected into the dense layer to tell the agent "how late" in the game it is.
+- **Turn Inference**: Because the exact tile values are mathematically present on the board, the network natively derives the game Phase/Turn without needing external Time Embeddings.
 - **Output**: 21 logits corresponding to board positions, masked for validity.
 
-This architecture captures spatial relationships on the board much better than standard MLPs.
+This architecture captures spatial relationships, tile ownership, and mathematical scoring weights natively in the convolution kernels.

@@ -136,15 +136,15 @@ def main():
     parser.add_argument("--num-games", type=int, default=100, help="Number of games to simulate in --sim mode")
     parser.add_argument("--stochastic-p1", action="store_true", help="Use probabilistic sampling for Player 1 (Only if MCTS off)")
     parser.add_argument("--stochastic-p2", action="store_true", help="Use probabilistic sampling for Player 2 (Only if MCTS off)")
-    parser.add_argument("--no-mcts", action="store_true", help="Disable MCTS and rely purely on network policy")
-    parser.add_argument("--sims", type=int, default=50, help="Number of MCTS simulations")
+    parser.add_argument("--eval-sims", type=int, default=50, help="Number of MCTS simulations during testing")
     args = parser.parse_args()
 
     # Determine Mode
     mode = "HumanVsAi" # Default
     agent_p1 = None
     agent_p2 = None
-    use_mcts = not args.no_mcts
+    use_mcts = True # Default to MCTS on
+    mcts_sims = args.eval_sims
     
     if args.p1 and args.p2:
         mode = "AiVsAi"
