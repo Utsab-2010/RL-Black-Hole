@@ -75,6 +75,8 @@ class AlphaMCTS:
         counts = {a: child.visits for a, child in root.children.items()}
         if not counts:
             # Fallback if tree search completely failed (e.g. 0 sims or unexpected terminal state)
+            n_hexes = root.state.num_hexes
+            probs = np.zeros(n_hexes)
             valid = root.state.get_valid_moves()
             if valid:
                 chosen = random.choice(valid)
@@ -82,9 +84,8 @@ class AlphaMCTS:
                 probs[chosen] = 1.0
             return probs
             
-        total = sum(counts.values())
-        
-        probs = np.zeros(21)
+        # Fallback probs is allocated AFTER counts (so we have root.state)
+        probs = np.zeros(root.state.num_hexes)
         
         if temperature == 0:
             best_a = max(counts, key=counts.get)
@@ -155,7 +156,7 @@ class AlphaMCTS:
         for root in roots:
             counts = {a: child.visits for a, child in root.children.items()}
             total = sum(counts.values())
-            probs = np.zeros(21)
+            probs = np.zeros(root.state.num_hexes)
             
             if not counts:
                 valid = root.state.get_valid_moves()
