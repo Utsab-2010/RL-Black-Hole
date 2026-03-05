@@ -19,7 +19,7 @@ from black_hole.mcts import AlphaMCTS
 # Hyperparameters
 TRAINING_ITERATIONS = 5000       # Total training loops (Self-Play -> Train)
 SELF_PLAY_EPISODES = 20         # Games played per iteration to generate data
-MCTS_SIMS = 10                 # MCTS simulations per move (Teacher strength)
+MCTS_SIMS = 20                 # MCTS simulations per move (Teacher strength)
 MCTS_SIMS_EVAL = 8            # MCTS simulations during eval vs random
 BATCH_SIZE = 512                # Minibatch size for training
 TRAINING_EPOCHS_PER_ITER = 8   # Passes through the buffer per iteration

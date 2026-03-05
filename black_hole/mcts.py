@@ -334,7 +334,8 @@ class AlphaMCTS:
         batch_size = len(nodes)
         
         # Prepare Batch Input
-        boards = np.zeros((batch_size, 21, 2), dtype=int)
+        n_hexes = nodes[0].state.num_hexes
+        boards = np.zeros((batch_size, n_hexes, 2), dtype=int)
         tiles = np.zeros(batch_size, dtype=int)
         
         for i, node in enumerate(nodes):
@@ -389,7 +390,6 @@ class AlphaMCTS:
                     # New expansion
                     next_state = copy.deepcopy(node.state)
                     tile_val = (next_state.tiles_placed // 2) + 1
-                    if tile_val > 10: tile_val = 10
                     next_state.make_move(action, tile_val)
                     
                     child = MCTSNode(next_state, parent=node, prior_prob=valid_probs[j])
