@@ -236,24 +236,26 @@ def main():
     env = gym.make("BlackHole-v0")
     obs, info = env.reset()
     
-    # Board Layout
+    # Board Layout — dynamically sized based on game layers
+    num_layers = env.unwrapped.game.layers
+    num_hexes = env.unwrapped.game.num_hexes
     positions = []
-    start_y = 100
-    spacing_y = 70
-    spacing_x = 70
+    spacing_y = max(40, 700 // num_layers)
+    spacing_x = max(40, 700 // num_layers)
+    circle_r = max(18, spacing_x // 2 - 4)
     center_x = SCREEN_WIDTH // 2
-    
+    start_y = max(40, (SCREEN_HEIGHT - spacing_y * num_layers) // 2)
     idx = 0
-    for row in range(6): 
+    for row in range(num_layers):
         count = row + 1
         row_width = (count - 1) * spacing_x
         start_x = center_x - row_width / 2
         for col in range(count):
             x = int(start_x + col * spacing_x)
             y = int(start_y + row * spacing_y)
-            positions.append((x, y, 40)) 
+            positions.append((x, y, circle_r))
             idx += 1
-            if idx >= 21: break
+            if idx >= num_hexes: break
             
     running = True
     clock = pygame.time.Clock()

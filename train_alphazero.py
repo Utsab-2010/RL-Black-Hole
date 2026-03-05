@@ -65,7 +65,7 @@ def self_play(agent, mcts, episodes, buffer):
     policies_history = {i: [] for i in range(episodes)}
     
     move_count = 0
-    total_moves = episodes * 20  # 20 moves per game
+    total_moves = episodes * (games[0].num_hexes - 1)  # dynamic: 44 moves per game for L=9
     print(f"  [Self-Play] Starting {episodes} parallel games (MCTS sims: {MCTS_SIMS} per move)")
     
     while active_games:
@@ -103,9 +103,8 @@ def self_play(agent, mcts, episodes, buffer):
             # Sample action
             action = np.random.choice(len(probs), p=probs)
             
-            # Make move
+            # Make move (tile_val is always (tiles_placed // 2) + 1, game enforces natural cap)
             tile_val = (game.tiles_placed // 2) + 1
-            if tile_val > 10: tile_val = 10
             game.make_move(action, tile_val)
             
             if game.check_game_over():
@@ -193,7 +192,7 @@ def eval_vs_random(agent, mcts, device, games_per_role=20):
 
             while not game.check_game_over():
                 tile_val = (game.tiles_placed // 2) + 1
-                if tile_val > 10: tile_val = 10
+                # No capping needed: game naturally limits to tiles_per_player
 
                 if game.current_player == role:
                     # Agent's turn — use MCTS policy

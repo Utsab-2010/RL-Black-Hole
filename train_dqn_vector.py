@@ -170,9 +170,7 @@ def train():
     
     # Model Config
     model_config = {
-        'pos_dim': 4,
-        'val_dim': 4,
-        'player_dim': 3,
+        'layers': 9,
         'hidden_dims': [128, 64]
     }
     

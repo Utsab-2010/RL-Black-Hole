@@ -1,26 +1,29 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from .game import BlackHoleGame
+from .game import BlackHoleGame, DEFAULT_LAYERS
 
 class BlackHoleEnv(gym.Env):
     metadata = {"render_modes": ["human", "ansi"]}
 
-    def __init__(self, render_mode=None):
-        self.game = BlackHoleGame()
+    def __init__(self, render_mode=None, layers=DEFAULT_LAYERS):
+        self.game = BlackHoleGame(layers=layers)
         self.render_mode = render_mode
         
-        # Action space: 0-20 representing the 21 board positions
-        self.action_space = spaces.Discrete(21)
+        N = self.game.num_hexes  # 45 for L=9
+        T = self.game.tiles_per_player  # 22 for L=9
+
+        # Action space: 0 to N-1 representing the N board positions
+        self.action_space = spaces.Discrete(N)
         
         # Observation space:
-        # board: 21x2 (player, value)
+        # board: Nx2 (player, value)
         # current_player: scalar 1 or 2
-        # current_tile: scalar 1-10
+        # current_tile: scalar 1 to T
         self.observation_space = spaces.Dict({
-            "board": spaces.Box(low=0, high=10, shape=(21, 2), dtype=int),
-            "current_player": spaces.Discrete(3), # 0 (unused), 1, 2
-            "current_tile": spaces.Discrete(11) # 0 (unused), 1-10
+            "board": spaces.Box(low=0, high=T, shape=(N, 2), dtype=int),
+            "current_player": spaces.Discrete(3),  # 0 (unused), 1, 2
+            "current_tile": spaces.Discrete(T + 1)  # 0 (unused), 1-T
         })
 
     def reset(self, seed=None, options=None):
@@ -33,15 +36,8 @@ class BlackHoleEnv(gym.Env):
         return obs, info
 
     def step(self, action):
-        # Determine value to place based on history/turn
-        # Rule: Players place 1 to 10 in order.
-        # Turn 0: P1 places 1
-        # Turn 1: P2 places 1
-        # Turn 2: P1 places 2
-        # Turn 3: P2 places 2
-        # ...
         # Tile value = (Turn // 2) + 1
-        
+        # Turn 0: P1 places 1, Turn 1: P2 places 1, Turn 2: P1 places 2, etc.
         current_turn_idx = self.game.tiles_placed
         tile_value = (current_turn_idx // 2) + 1
         
@@ -52,14 +48,8 @@ class BlackHoleEnv(gym.Env):
         # Validate Action
         valid_moves = self.game.get_valid_moves()
         if action not in valid_moves:
-            # Invalid move! 
-            # In some RL settings we terminate with heavy penalty
-            # Or just ignore it (no-op) but that stalls training.
-            # Here we will terminate with penalty to force learning valid moves.
             terminated = True
-            reward = -10 # Invalid move penalty
-            
-            # For debugging/info
+            reward = -10  # Invalid move penalty
             info = self._get_info()
             info["error"] = "Invalid Move"
             return self._get_obs(), reward, terminated, truncated, info
@@ -69,20 +59,7 @@ class BlackHoleEnv(gym.Env):
         
         if is_game_over:
             terminated = True
-            # Calculate winner
             winner, reason = self.game.calculate_score()
-            
-            # Reward shaping:
-            # We are training... whom?
-            # Usually env is generic. 
-            # If we train Player 1: +1 if P1 wins, -1 if P2 wins.
-            # But the agent might be controlling P2 on P2's turn?
-            # Standard single-agent env usually fixes one player or controls both.
-            # Let's assume this env controls the *current player*.
-            # But that's non-stationary.
-            # For simplicity in this base env:
-            # Return result from perspective of Player 1?
-            # Or standard: 1=win, -1=loss, 0=draw.
             
             if winner == 1:
                 reward = 1
@@ -90,23 +67,19 @@ class BlackHoleEnv(gym.Env):
                 reward = -1
             else:
                 reward = 0
-            
-            # Note: If the agent is self-play, it usually needs the reward 
-            # relative to the player who just moved.
-            # But this is a simple Gym wrapper.
-            
         else:
-            reward = 0 # Continue playing
+            reward = 0
 
         return self._get_obs(), reward, terminated, truncated, self._get_info()
 
     def _get_obs(self):
-        # Calculate current tile for the *next* move (which is what the agent needs to know)
         current_turn_idx = self.game.tiles_placed
-        if current_turn_idx < 20:
+        max_turns = self.game.num_hexes - 1  # 44 for L=9
+
+        if current_turn_idx < max_turns:
             tile_value = (current_turn_idx // 2) + 1
         else:
-            tile_value = 0 # Game over state
+            tile_value = 0  # Game over state
 
         return {
             "board": self.game.board.astype(int),
