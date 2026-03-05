@@ -67,8 +67,11 @@ def load_agent(model_path, device):
         print(f"Error loading model: {e}")
         return None
 
-def get_ai_move(agent, obs, device, flip_board=False, stochastic=False, use_mcts=True, mcts_sims=50):
+def get_action(game, role, obs, agent, device, use_mcts, mcts_sims):
     # Prepare Observation
+    # If role is 2, the board needs to be flipped for the agent.
+    flip_board = (role == 2)
+
     if flip_board:
         # Flip Board: 1->2, 2->1 for Agent Input
         ai_board = obs["board"].copy()
@@ -92,12 +95,8 @@ def get_ai_move(agent, obs, device, flip_board=False, stochastic=False, use_mcts
 
     # Use MCTS
     if use_mcts:
-        from black_hole.game import BlackHoleGame
-        game = BlackHoleGame()
-        game.board = ai_obs["board"].copy()
-        game.tiles_placed = ai_obs["tiles_placed"]
-        game.current_player = 1 # We use canonical board
-        
+        # MCTS expects a canonical game state (player 1 always to move)
+        # The `game` object passed here is already canonical for the MCTS run.
         mcts = AlphaMCTS(agent, device)
         # Use temp=0 for greedy play during test (deterministic based on N)
         probs = mcts.run(game, num_simulations=mcts_sims, temperature=0.0)
@@ -111,17 +110,7 @@ def get_ai_move(agent, obs, device, flip_board=False, stochastic=False, use_mcts
         
         mask_tensor = get_action_mask(ai_obs, device)
         q_values[0, ~mask_tensor] = -float('inf')
-        
-        if stochastic:
-            probs = torch.softmax(q_values, dim=1)
-            probs[0, ~mask_tensor] = 0
-            if probs.sum() > 0:
-                probs = probs / probs.sum()
-                action = torch.multinomial(probs, 1).item()
-            else:
-                action = q_values.argmax().item()
-        else:
-            action = q_values.argmax().item()
+        action = q_values.argmax().item()
         
     return action
 
@@ -132,11 +121,9 @@ def main():
     parser.add_argument("--p2", type=str, help="Path to P2 model (AI vs AI)")
     parser.add_argument("--player", type=int, default=1, choices=[1, 2], help="Your Player ID (1 or 2) in Human vs AI")
     parser.add_argument("--cpu", action="store_true", help="Force CPU inference")
-    parser.add_argument("--sim", action="store_true", help="Run in headless simulation mode (AI vs AI only)")
     parser.add_argument("--num-games", type=int, default=100, help="Number of games to simulate in --sim mode")
-    parser.add_argument("--stochastic-p1", action="store_true", help="Use probabilistic sampling for Player 1 (Only if MCTS off)")
-    parser.add_argument("--stochastic-p2", action="store_true", help="Use probabilistic sampling for Player 2 (Only if MCTS off)")
-    parser.add_argument("--eval-sims", type=int, default=50, help="Number of MCTS simulations during testing")
+    parser.add_argument("--eval-sims", type=int, default=10, help="Number of MCTS simulations during testing")
+    parser.add_argument("--sim", action="store_true", help="Run in simulation mode (AI vs AI)")
     args = parser.parse_args()
 
     # Determine Mode
@@ -191,11 +178,13 @@ def main():
             done = False
             while not done:
                 current_p = obs.get("current_player", 1)
-                active_agent = agent_p1 if current_p == 1 else agent_p2
                 
-                flip = (current_p == 2)
-                use_stoch = args.stochastic_p1 if current_p == 1 else args.stochastic_p2
-                action = get_ai_move(active_agent, obs, DEVICE, flip_board=flip, stochastic=use_stoch, use_mcts=use_mcts, mcts_sims=args.sims)
+                # P1 Turn
+                if current_p == 1:
+                    action = get_action(env.unwrapped.game, 1, obs, agent_p1, DEVICE, use_mcts, mcts_sims)
+                # P2 Turn
+                else:
+                    action = get_action(env.unwrapped.game, 2, obs, agent_p2, DEVICE, use_mcts, mcts_sims)
                 
                 obs, reward, terminated, truncated, _ = env.step(action)
                 done = terminated or truncated
@@ -286,9 +275,10 @@ def main():
         if not is_human_turn and not game_over:
             active_agent = agent_p1 if current_p == 1 else agent_p2
             if active_agent:
-                flip = (current_p == 2)
-                use_stoch = args.stochastic_p1 if current_p == 1 else args.stochastic_p2
-                action = get_ai_move(active_agent, obs, DEVICE, flip_board=flip, stochastic=use_stoch, use_mcts=use_mcts, mcts_sims=args.sims)
+                # Get the current game state from the environment for MCTS
+                game_state = env.unwrapped.game
+                
+                action = get_action(game_state, current_p, obs, active_agent, DEVICE, use_mcts, mcts_sims)
                 
                 print(f"AlphaZero ({'P1' if current_p==1 else 'P2'}) plays {action}")
                 obs, reward, terminated, truncated, info = env.step(action)
@@ -315,7 +305,7 @@ def main():
             screen.blit(t_surf, (20, 60))
             
             mcts_status = "ON" if use_mcts else "OFF"
-            m_surf = small_font.render(f"MCTS: {mcts_status} (Sims: {args.sims})", True, (150, 150, 150))
+            m_surf = small_font.render(f"MCTS: {mcts_status} (Sims: {args.sim})", True, (150, 150, 150))
             screen.blit(m_surf, (20, SCREEN_HEIGHT - 60))
         else:
             res_surf = font.render(f"GAME OVER: {result_text}", True, (255, 200, 0))

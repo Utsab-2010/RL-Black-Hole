@@ -73,6 +73,15 @@ class AlphaMCTS:
 
         # 4. Generate Policy
         counts = {a: child.visits for a, child in root.children.items()}
+        if not counts:
+            # Fallback if tree search completely failed (e.g. 0 sims or unexpected terminal state)
+            valid = root.state.get_valid_moves()
+            if valid:
+                chosen = random.choice(valid)
+                print(f"[MCTS Fallback] Triggered! Zero counts in root. Picked random valid move: {chosen}")
+                probs[chosen] = 1.0
+            return probs
+            
         total = sum(counts.values())
         
         probs = np.zeros(21)
@@ -148,7 +157,13 @@ class AlphaMCTS:
             total = sum(counts.values())
             probs = np.zeros(21)
             
-            if total > 0:
+            if not counts:
+                valid = root.state.get_valid_moves()
+                if valid: 
+                    chosen = random.choice(valid)
+                    print(f"[Batched MCTS Fallback] Triggered! Zero counts in root. Picked random valid move: {chosen}")
+                    probs[chosen] = 1.0
+            elif total > 0:
                 if temperature == 0:
                     best_a = max(counts, key=counts.get)
                     probs[best_a] = 1.0

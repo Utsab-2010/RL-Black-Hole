@@ -17,17 +17,18 @@ from black_hole.model import AlphaBH, preprocess_obs, preprocess_batch
 from black_hole.mcts import AlphaMCTS
 
 # Hyperparameters
-TRAINING_ITERATIONS = 2000       # Total training loops (Self-Play -> Train)
+TRAINING_ITERATIONS = 5000       # Total training loops (Self-Play -> Train)
 SELF_PLAY_EPISODES = 20         # Games played per iteration to generate data
 MCTS_SIMS = 10                 # MCTS simulations per move (Teacher strength)
 MCTS_SIMS_EVAL = 8            # MCTS simulations during eval vs random
 BATCH_SIZE = 512                # Minibatch size for training
 TRAINING_EPOCHS_PER_ITER = 8   # Passes through the buffer per iteration
 LEARNING_RATE = 0.2
+SCHEDULER_STEP = 50
 LR_DECAY = 0.99
 BUFFER_SIZE = 4096
-PLOT_WINDOW = 5
-EVAL_INTERVAL = 1       # Run eval every N iterations
+PLOT_WINDOW = 25
+EVAL_INTERVAL = 10       # Run eval every N iterations
 EVAL_GAMES = 5        # Games per role (x2 for P1+P2)
 
 LOG_LINES = ["Iteration,Loss,AvgReward\n"]
@@ -312,7 +313,7 @@ def main():
             train_losses.append(loss)
             
             # Decay learning rate
-            if iteration % 20 == 0:
+            if iteration % SCHEDULER_STEP == 0:
                 scheduler.step()
             current_lr = scheduler.get_last_lr()[0]
             
