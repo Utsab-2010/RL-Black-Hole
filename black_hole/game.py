@@ -24,6 +24,23 @@ class BlackHoleGame:
         self.p1_tiles = list(range(1, self.tiles_per_player + 1))
         self.p2_tiles = list(range(1, self.tiles_per_player + 1))
 
+    def clone(self):
+        """
+        Fast shallow clone of the game state for MCTS tree search.
+        `adj` is shared (it never mutates after __init__) to avoid the
+        expensive recursive copy that copy.deepcopy() would perform.
+        """
+        g = object.__new__(BlackHoleGame)
+        g.layers = self.layers
+        g.num_hexes = self.num_hexes
+        g.tiles_per_player = self.tiles_per_player
+        g.adj = self.adj            # shared — adj is read-only after build
+        g.board = self.board.copy() # only the mutable numpy array is copied
+        g.current_player = self.current_player
+        g.tiles_placed = self.tiles_placed
+        g.history = self.history[:]  # shallow list copy is sufficient
+        return g
+
     def _build_adjacency(self):
         """
         Dynamically builds the adjacency list for an L-layer triangular grid.

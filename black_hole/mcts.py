@@ -34,7 +34,7 @@ class AlphaMCTS:
     def run(self, root_state, num_simulations=800, temperature=1.0):
         # 1. Create Root
         # We clone state to be safe
-        root = MCTSNode(copy.deepcopy(root_state))
+        root = MCTSNode(root_state.clone())
         
         # 2. Expand Root (Add noise)
         self._expand_node(root)
@@ -109,7 +109,7 @@ class AlphaMCTS:
             return []
             
         # 1. Create Roots
-        roots = [MCTSNode(copy.deepcopy(state)) for state in states]
+        roots = [MCTSNode(state.clone()) for state in states]
         
         # Expand and add noise to all roots
         for root in roots:
@@ -252,9 +252,8 @@ class AlphaMCTS:
         uniform_prob = 1.0 / len(valid_moves) if valid_moves else 0.0
         
         for action in valid_moves:
-            next_state = copy.deepcopy(node.state)
+            next_state = node.state.clone()
             tile_val = (next_state.tiles_placed // 2) + 1
-            if tile_val > 10: tile_val = 10
             next_state.make_move(action, tile_val)
             
             child = MCTSNode(next_state, parent=node, prior_prob=uniform_prob)
@@ -311,11 +310,10 @@ class AlphaMCTS:
             
         for i, action in enumerate(valid_moves):
             # Create Child
-            next_state = copy.deepcopy(node.state)
+            next_state = node.state.clone()
             
-            # Determine tile value logic
+            # Determine tile value
             tile_val = (next_state.tiles_placed // 2) + 1
-            if tile_val > 10: tile_val = 10
             
             next_state.make_move(action, tile_val)
             
@@ -388,7 +386,7 @@ class AlphaMCTS:
                     node.children[action].prior_prob = valid_probs[j]
                 else:
                     # New expansion
-                    next_state = copy.deepcopy(node.state)
+                    next_state = node.state.clone()
                     tile_val = (next_state.tiles_placed // 2) + 1
                     next_state.make_move(action, tile_val)
                     

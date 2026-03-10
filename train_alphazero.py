@@ -19,7 +19,7 @@ from black_hole.mcts import AlphaMCTS
 # Hyperparameters
 TRAINING_ITERATIONS = 5000       # Total training loops (Self-Play -> Train)
 SELF_PLAY_EPISODES = 20         # Games played per iteration to generate data
-MCTS_SIMS = 20                 # MCTS simulations per move (Teacher strength)
+MCTS_SIMS = 10                 # MCTS simulations per move (Teacher strength)
 MCTS_SIMS_EVAL = 8            # MCTS simulations during eval vs random
 BATCH_SIZE = 512                # Minibatch size for training
 TRAINING_EPOCHS_PER_ITER = 8   # Passes through the buffer per iteration
@@ -29,7 +29,9 @@ LR_DECAY = 0.99
 BUFFER_SIZE = 4096
 PLOT_WINDOW = 25
 EVAL_INTERVAL = 10       # Run eval every N iterations
-EVAL_GAMES = 5        # Games per role (x2 for P1+P2)
+EVAL_GAMES = 5        # Games per role vs random (x2 for P1+P2)
+EVAL_UPGRADE_THRESHOLD = 0.6  # If vs-random score >= this, also run vs last checkpoint
+EVAL_CHECKPOINT_GAMES = 5  # Games per role vs checkpoint (x2 for P1+P2)
 
 LOG_LINES = ["Iteration,Loss,AvgReward\n"]
 
@@ -179,8 +181,7 @@ def train(agent, optimizer, buffer, device):
 
 def eval_vs_random(agent, mcts, device, games_per_role=20):
     """
-    Plays agent vs a pure random opponent using MCTS for decision making.
-    Runs games_per_role games as P1 and games_per_role games as P2.
+    Plays agent (MCTS) vs a pure random opponent.
     Returns average reward from the agent's perspective.
     """
     agent.eval()
@@ -192,28 +193,70 @@ def eval_vs_random(agent, mcts, device, games_per_role=20):
 
             while not game.check_game_over():
                 tile_val = (game.tiles_placed // 2) + 1
-                # No capping needed: game naturally limits to tiles_per_player
 
                 if game.current_player == role:
-                    # Agent's turn — use MCTS policy
                     probs = mcts.run(game, num_simulations=MCTS_SIMS_EVAL, temperature=0.0)
                     action = np.argmax(probs)
                 else:
-                    # Random opponent
                     action = random.choice(game.get_valid_moves())
 
                 game.make_move(action, tile_val)
 
             winner, _ = game.calculate_score()
-            if winner == role:
-                rewards.append(1.0)
-            elif winner == 0:
-                rewards.append(0.0)
-            else:
-                rewards.append(-1.0)
+            if winner == role:   rewards.append(1.0)
+            elif winner == 0:    rewards.append(0.0)
+            else:                rewards.append(-1.0)
 
     avg = float(np.mean(rewards))
     print(f"  [Eval vs Random] Avg reward over {games_per_role*2} games: {avg:+.3f} "
+          f"(P1: {np.mean(rewards[:games_per_role]):+.2f}, P2: {np.mean(rewards[games_per_role:]):+.2f})",
+          flush=True)
+    return avg
+
+
+def eval_vs_checkpoint(agent, mcts, device, checkpoint_path, games_per_role=10):
+    """
+    Plays current agent (MCTS) vs the last saved checkpoint model (also using MCTS).
+    Only called when eval_vs_random >= EVAL_UPGRADE_THRESHOLD.
+    Returns average reward from the current agent's perspective.
+    """
+    if not os.path.isfile(checkpoint_path):
+        print(f"  [Eval vs Checkpoint] No checkpoint found at {checkpoint_path}, skipping.")
+        return None
+
+    # Load old model
+    old_agent = AlphaBH().to(device)
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    state = ckpt.get('state_dict', ckpt)
+    old_agent.load_state_dict(state)
+    old_agent.eval()
+    old_mcts = AlphaMCTS(old_agent, device)
+
+    agent.eval()
+    rewards = []
+
+    for role in [1, 2]:  # current agent plays as P1 then P2
+        for _ in range(games_per_role):
+            game = BlackHoleGame()
+
+            while not game.check_game_over():
+                tile_val = (game.tiles_placed // 2) + 1
+
+                if game.current_player == role:
+                    probs = mcts.run(game, num_simulations=MCTS_SIMS_EVAL, temperature=0.0)
+                else:
+                    probs = old_mcts.run(game, num_simulations=MCTS_SIMS_EVAL, temperature=0.0)
+
+                action = np.argmax(probs)
+                game.make_move(action, tile_val)
+
+            winner, _ = game.calculate_score()
+            if winner == role:   rewards.append(1.0)
+            elif winner == 0:    rewards.append(0.0)
+            else:                rewards.append(-1.0)
+
+    avg = float(np.mean(rewards))
+    print(f"  [Eval vs Checkpoint] Avg reward over {games_per_role*2} games: {avg:+.3f} "
           f"(P1: {np.mean(rewards[:games_per_role]):+.2f}, P2: {np.mean(rewards[games_per_role:]):+.2f})",
           flush=True)
     return avg
@@ -324,10 +367,24 @@ def main():
             train_losses.append(0)
             log_metrics(iteration, 0.0, avg_reward)
 
-        # 2.5 Eval vs random (every EVAL_INTERVAL iterations)
+        # 2.5 Eval (every EVAL_INTERVAL iterations)
         if (iteration + 1) % EVAL_INTERVAL == 0:
             print(f"--- Eval vs Random (Iteration {iteration+1}) ---")
             eval_reward = eval_vs_random(agent, mcts, device, games_per_role=EVAL_GAMES)
+
+            # If agent is crushing random (>= threshold), run harder eval vs last checkpoint
+            checkpoint_path = os.path.join(run_dir, "model.pth")
+            if eval_reward >= EVAL_UPGRADE_THRESHOLD:
+                print(f"  >> Score {eval_reward:+.3f} >= {EVAL_UPGRADE_THRESHOLD}, "
+                      f"running vs last checkpoint...")
+                ckpt_reward = eval_vs_checkpoint(
+                    agent, mcts, device, checkpoint_path,
+                    games_per_role=EVAL_CHECKPOINT_GAMES
+                )
+                if ckpt_reward is not None:
+                    eval_reward = ckpt_reward  # report the harder score
+                    print(f"  >> Final reported eval (vs checkpoint): {eval_reward:+.3f}")
+
             eval_results.append((iteration + 1, eval_reward))
 
         # 3. Save updated plot each iteration (create fresh, close after)
