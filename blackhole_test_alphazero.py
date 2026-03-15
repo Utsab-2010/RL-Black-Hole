@@ -13,8 +13,7 @@ from black_hole.model import AlphaBH, preprocess_obs, get_action_mask
 from black_hole.mcts import AlphaMCTS
 
 # --- Configuration ---
-SCREEN_WIDTH = 800
-SCREEN_HEIGHT = 600
+# Screen size is determined at runtime from the actual display
 BG_COLOR = (20, 20, 30)
 CIRCLE_COLOR = (50, 50, 60)
 HIGHLIGHT_COLOR = (80, 80, 100)
@@ -95,12 +94,17 @@ def get_action(game, role, obs, agent, device, use_mcts, mcts_sims):
 
     # Use MCTS
     if use_mcts:
-        # MCTS expects a canonical game state (player 1 always to move)
-        # The `game` object passed here is already canonical for the MCTS run.
         mcts = AlphaMCTS(agent, device)
-        # Use temp=0 for greedy play during test (deterministic based on N)
-        probs = mcts.run(game, num_simulations=mcts_sims, temperature=0.0)
-        return np.argmax(probs)
+        # temperature=0.2: slight exploration while still strongly preferring high-visit moves
+        probs = mcts.run(game, num_simulations=mcts_sims, temperature=0.1)
+
+        # Top-3 sampling: keep only the 5 best moves, renormalize, then sample
+        probs_t = torch.tensor(probs, dtype=torch.float32)
+        top_k = min(3, (probs_t > 0).sum().item())
+        top_vals, top_idx = probs_t.topk(top_k)
+        top_vals = top_vals / (top_vals.sum() + 1e-8)  # renormalize
+        chosen = top_idx[torch.multinomial(top_vals, 1)].item()
+        return chosen
 
     # Fallback to pure Network Policy (No MCTS)
     state_tensor = preprocess_obs(ai_obs, device).unsqueeze(0)
@@ -206,7 +210,10 @@ def main():
 
     # Init Pygame
     pygame.init()
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    info = pygame.display.Info()  # reads native desktop resolution
+    SCREEN_WIDTH = info.current_w
+    SCREEN_HEIGHT = info.current_h
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.FULLSCREEN)
     pygame.display.set_caption("Black Hole AlphaZero Test - " + mode)
     font = pygame.font.Font(None, 36)
     small_font = pygame.font.Font(None, 24)
@@ -215,24 +222,27 @@ def main():
     env = gym.make("BlackHole-v0")
     obs, info = env.reset()
     
-    # Board Layout — dynamically sized based on game layers
+    # Board Layout — dynamically sized to fill fullscreen
     num_layers = env.unwrapped.game.layers
     num_hexes = env.unwrapped.game.num_hexes
     positions = []
-    # Scale spacing to fit the larger pyramid on screen
-    spacing_y = max(40, 700 // num_layers)
-    spacing_x = max(40, 700 // num_layers)
-    circle_r = max(18, spacing_x // 2 - 4)
+    # Use 75% of the screen height and 80% of screen width for the pyramid
+    usable_h = int(SCREEN_HEIGHT * 0.82)
+    usable_w = int(SCREEN_WIDTH * 0.80)
+    spacing_y = max(30, usable_h // (num_layers + 1))
+    spacing_x = max(30, usable_w // (num_layers + 1))
+    spacing = min(spacing_x, spacing_y)  # keep hexes square
+    circle_r = max(12, spacing // 2 - 3)  # slightly smaller than half-spacing
     center_x = SCREEN_WIDTH // 2
-    start_y = max(40, (SCREEN_HEIGHT - spacing_y * num_layers) // 2)
+    start_y = max(30, (SCREEN_HEIGHT - spacing * (num_layers - 1)) // 2)
     idx = 0
     for row in range(num_layers):
         count = row + 1
-        row_width = (count - 1) * spacing_x
+        row_width = (count - 1) * spacing
         start_x = center_x - row_width / 2
         for col in range(count):
-            x = int(start_x + col * spacing_x)
-            y = int(start_y + row * spacing_y)
+            x = int(start_x + col * spacing)
+            y = int(start_y + row * spacing)
             positions.append((x, y, circle_r))
             idx += 1
             if idx >= num_hexes: break

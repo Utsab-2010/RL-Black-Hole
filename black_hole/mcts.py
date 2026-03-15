@@ -24,7 +24,7 @@ class MCTSNode:
         return self.mean_value
 
 class AlphaMCTS:
-    def __init__(self, model, device, cpu_count=1.41, dirichlet_alpha=0.3, dirichlet_eps=0.25):
+    def __init__(self, model, device, cpu_count=1.41, dirichlet_alpha=None, dirichlet_eps=0.25):
         self.model = model
         self.device = device
         self.c_puct = cpu_count
@@ -426,7 +426,10 @@ class AlphaMCTS:
         valid_actions = list(node.children.keys())
         if not valid_actions: return
         
-        noise = np.random.dirichlet([self.dir_alpha] * len(valid_actions))
+        # AlphaZero scales dir_alpha inversely with the number of average legal moves
+        # We calculate it dynamically based on exact legal moves, matching the '10 / N' rule.
+        alpha = self.dir_alpha if self.dir_alpha is not None else (10.0 / len(valid_actions))
+        noise = np.random.dirichlet([alpha] * len(valid_actions))
         
         for i, action in enumerate(valid_actions):
             child = node.children[action]

@@ -11,6 +11,7 @@ import torch.optim as optim
 import matplotlib
 matplotlib.use('Agg')  # Headless backend — no GUI window, no freeze
 import matplotlib.pyplot as plt
+import math
 from collections import deque
 from black_hole.game import BlackHoleGame
 from black_hole.model import AlphaBH, preprocess_obs, preprocess_batch
@@ -18,14 +19,15 @@ from black_hole.mcts import AlphaMCTS
 
 # Hyperparameters
 TRAINING_ITERATIONS = 5000       # Total training loops (Self-Play -> Train)
-SELF_PLAY_EPISODES = 20         # Games played per iteration to generate data
-MCTS_SIMS = 10                 # MCTS simulations per move (Teacher strength)
+SELF_PLAY_EPISODES = 40         # Games played(parallelly) per iteration to generate data
+MCTS_SIMS = 15                 # MCTS simulations per move (Teacher strength)
 MCTS_SIMS_EVAL = 8            # MCTS simulations during eval vs random
 BATCH_SIZE = 512                # Minibatch size for training
 TRAINING_EPOCHS_PER_ITER = 8   # Passes through the buffer per iteration
-LEARNING_RATE = 0.2
-SCHEDULER_STEP = 50
-LR_DECAY = 0.99
+LEARNING_RATE = 0.2     # Peak LR at start of first cycle
+LR_MIN = 1e-5             # Floor LR (never goes below this)
+LR_CYCLE_LEN = 100        # Iterations per cosine cycle (uniform)
+LR_PEAK_DECAY = 0.85      # Each restart peak = 85% of previous peak
 BUFFER_SIZE = 4096
 PLOT_WINDOW = 25
 EVAL_INTERVAL = 10       # Run eval every N iterations
@@ -247,7 +249,11 @@ def eval_vs_checkpoint(agent, mcts, device, checkpoint_path, games_per_role=10):
                 else:
                     probs = old_mcts.run(game, num_simulations=MCTS_SIMS_EVAL, temperature=0.0)
 
-                action = np.argmax(probs)
+                probs_t = torch.tensor(probs, dtype=torch.float32)
+                top_k = min(5, (probs_t > 0).sum().item())
+                top_vals, top_idx = probs_t.topk(top_k)
+                top_vals = top_vals / (top_vals.sum() + 1e-8)  # renormalize
+                action = top_idx[torch.multinomial(top_vals, 1)].item()
                 game.make_move(action, tile_val)
 
             winner, _ = game.calculate_score()
@@ -272,8 +278,20 @@ def main():
     print(f"Using device: {device}")
     
     agent = AlphaBH().to(device)
-    optimizer = optim.SGD(agent.parameters(), lr=LEARNING_RATE)
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=LR_DECAY)
+    optimizer = optim.SGD(agent.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+
+    # Cosine annealing warm restart with geometrically decaying peaks
+    # LR follows: peak * 0.5*(1 + cos(pi * t / T)) within each cycle
+    # After each cycle, peak *= LR_PEAK_DECAY (down to 85% each time)
+    def lr_lambda(iteration):
+        cycle      = iteration // LR_CYCLE_LEN
+        cycle_pos  = iteration  % LR_CYCLE_LEN
+        peak       = LEARNING_RATE * (LR_PEAK_DECAY ** cycle)
+        cos_factor = 0.5 * (1.0 + math.cos(math.pi * cycle_pos / LR_CYCLE_LEN))
+        lr         = LR_MIN + (peak - LR_MIN) * cos_factor
+        return lr / LEARNING_RATE   # LambdaLR multiplies base_lr by this
+
+    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     mcts = AlphaMCTS(agent, device)
     buffer = ReplayBuffer(BUFFER_SIZE)
     
@@ -354,10 +372,9 @@ def main():
             loss = train(agent, optimizer, buffer, device)
             train_losses.append(loss)
             
-            # Decay learning rate
-            if iteration % SCHEDULER_STEP == 0:
-                scheduler.step()
-            current_lr = scheduler.get_last_lr()[0]
+            # Step LR every iteration (cosine schedule tracks iteration count)
+            scheduler.step()
+            current_lr = scheduler.get_last_lr()[0] 
             
             # Log
             log_metrics(iteration, loss, avg_reward)
